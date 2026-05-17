@@ -7,6 +7,7 @@
 
 mod cache;
 mod dirs;
+#[cfg(not(target_os = "macos"))]
 mod parser;
 mod platform;
 
@@ -16,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxisInfo {
@@ -76,36 +76,5 @@ pub fn discover(dirs: &[(PathBuf, bool)]) -> Arc<FontFiles> {
 }
 
 fn enumerate(dirs: &[(PathBuf, bool)]) -> FontFiles {
-    let mut candidates: HashMap<PathBuf, bool> = HashMap::new();
-
-    for path in platform::system_font_paths() {
-        if !parser::is_font_file(&path) || !path.exists() {
-            continue;
-        }
-        let user_installed = dirs::classify_user_installed(&path);
-        candidates.entry(path).or_insert(user_installed);
-    }
-
-    for (dir, user_installed) in dirs {
-        for entry in WalkDir::new(dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if !parser::is_font_file(path) {
-                continue;
-            }
-            // `insert` overrides; explicit config beats $HOME heuristic.
-            candidates.insert(path.to_path_buf(), *user_installed);
-        }
-    }
-
-    let mut out: FontFiles = HashMap::with_capacity(candidates.len());
-    for (path, user_installed) in candidates {
-        match parser::read_font_file(&path, user_installed) {
-            Ok(faces) if !faces.is_empty() => {
-                out.insert(path.to_string_lossy().into_owned(), faces);
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(path = %path.display(), error = %e, "skip font"),
-        }
-    }
-    out
+    platform::enumerate(dirs)
 }

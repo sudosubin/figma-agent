@@ -3,8 +3,8 @@
 
 use super::{AxisInfo, FaceInfo};
 use anyhow::Result;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 pub(super) fn is_font_file(path: &Path) -> bool {
     matches!(
@@ -15,7 +15,7 @@ pub(super) fn is_font_file(path: &Path) -> bool {
 
 pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<FaceInfo>> {
     let bytes = std::fs::read(path)?;
-    let modified_at = file_mtime(path);
+    let modified_at = file_ctime(path);
     let face_count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
     let mut out = Vec::new();
     for index in 0..face_count {
@@ -166,13 +166,8 @@ fn quantize_width(percent: f64) -> u8 {
     best
 }
 
-fn file_mtime(path: &Path) -> u64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+fn file_ctime(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.ctime() as u64).unwrap_or(0)
 }
 
 struct NamedInstance {
