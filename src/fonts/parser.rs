@@ -108,17 +108,73 @@ fn decode_name(n: &ttf_parser::name::Name) -> Option<String> {
 fn extract_axes(face: &ttf_parser::Face) -> Vec<AxisInfo> {
     face.variation_axes()
         .into_iter()
-        .map(|a| AxisInfo {
-            tag: a.tag.to_string(),
-            name: pick_name(face, a.name_id).unwrap_or_default(),
-            // Overridden later if a named-instance applies.
-            value: a.def_value,
-            min: a.min_value,
-            max: a.max_value,
-            default: a.def_value,
-            hidden: a.hidden,
+        .map(|a| {
+            let tag = a.tag.to_string();
+            AxisInfo {
+                name: pick_axis_name(face, &tag, a.name_id),
+                tag,
+                // Overridden later if a named-instance applies.
+                value: a.def_value,
+                min: a.min_value,
+                max: a.max_value,
+                default: a.def_value,
+                hidden: a.hidden,
+            }
         })
         .collect()
+}
+
+/// Upstream resolves axis names with three rules:
+///   1. OT-registered axes always surface their canonical English name,
+///      so font-local translations (e.g. "字寬" for `wdth`) don't leak.
+///   2. Otherwise prefer the Macintosh entry, but ONLY when ttf-parser
+///      can decode it (i.e. UTF-16BE). Apple-shipped variable fonts
+///      often carry a MacRoman/ASCII Mac entry that ttf-parser can't
+///      decode (Recursive's `MONO` has Mac=ASCII "Monospace" alongside
+///      Win=UTF-16BE "Monospace"); upstream surfaces the tag itself in
+///      that case. The custom `decode_name` ASCII fallback used for
+///      family names would defeat this rule, so we don't reach for it.
+///   3. If no Mac entry is present at all (PingFangUI's `WDTH`/`HGHT`),
+///      fall through to the Windows long name.
+fn pick_axis_name(face: &ttf_parser::Face, tag: &str, name_id: u16) -> String {
+    if let Some(canonical) = registered_axis_name(tag) {
+        return canonical.to_string();
+    }
+    let names = face.names();
+    let mut has_mac = false;
+    let mut mac_decoded: Option<String> = None;
+    let mut win_decoded: Option<String> = None;
+    for j in 0..names.len() {
+        let Some(n) = names.get(j) else { continue };
+        if n.name_id != name_id {
+            continue;
+        }
+        if n.platform_id == ttf_parser::PlatformId::Macintosh && !has_mac {
+            has_mac = true;
+            mac_decoded = n.to_string();
+        } else if n.platform_id == ttf_parser::PlatformId::Windows
+            && n.language_id == 0x0409
+            && win_decoded.is_none()
+        {
+            win_decoded = n.to_string();
+        }
+    }
+    if has_mac {
+        mac_decoded.filter(|s| !s.is_empty()).unwrap_or_else(|| tag.to_string())
+    } else {
+        win_decoded.unwrap_or_else(|| tag.to_string())
+    }
+}
+
+fn registered_axis_name(tag: &str) -> Option<&'static str> {
+    match tag {
+        "wght" => Some("Weight"),
+        "wdth" => Some("Width"),
+        "slnt" => Some("Slant"),
+        "ital" => Some("Italic"),
+        "opsz" => Some("Optical Size"),
+        _ => None,
+    }
 }
 
 /// Match upstream's Galvji-Oblique → "Italic" rewrite. The trigger is an
@@ -240,7 +296,9 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
 /// both the per-instance psNameID (sometimes lower-case CJK region codes
 /// like "cn" instead of "SC") and NameID 25 (often baked with the style,
 /// e.g. "STIXTwoTextItalic"). wght truncates to u16 (Skia-Bold's
-/// wght=1.949997 surfaces as weight=1).
+/// wght=1.949997 surfaces as weight=1). Italic flips when slnt or ital
+/// is non-zero on the instance, since fvar drives "Italic" via those
+/// axes rather than per-face fsSelection bits.
 fn apply_instance(base: &FaceInfo, inst: NamedInstance) -> FaceInfo {
     let mut info = base.clone();
     info.postscript = format!(
@@ -254,6 +312,11 @@ fn apply_instance(base: &FaceInfo, inst: NamedInstance) -> FaceInfo {
         match axis.tag.as_str() {
             "wght" => info.weight = *coord as u16,
             "wdth" => info.stretch = quantize_width(*coord as f64),
+            "slnt" | "ital" => {
+                if *coord != 0.0 {
+                    info.italic = true;
+                }
+            }
             _ => {}
         }
     }
