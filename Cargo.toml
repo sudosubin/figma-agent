@@ -47,3 +47,7 @@ tls = ["dep:axum-server", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen"]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Profile used by `dist` when building release archives.
+[profile.dist]
+inherits = "release"
