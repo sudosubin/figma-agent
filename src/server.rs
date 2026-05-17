@@ -1,12 +1,14 @@
 //! PNA: Chrome 94+ blocks public-origin to 127.0.0.1 preflight without
 //! `Access-Control-Allow-Private-Network: true`.
 
+use crate::config::Config;
 use anyhow::Result;
 use axum::{
     http::{header, HeaderName, HeaderValue, Method},
     Router,
     ServiceExt,
 };
+use std::sync::Arc;
 use tower::Layer;
 use tower_http::{
     compression::CompressionLayer,
@@ -15,10 +17,14 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-pub async fn serve() -> Result<()> {
-    let http_addr = "127.0.0.1:44950";
+pub async fn serve(config: Config) -> Result<()> {
+    let http_addr = format!("{}:{}", config.host, config.port);
     #[cfg(feature = "tls")]
-    let tls_addr = "127.0.0.1:44951";
+    let tls_addr = config.tls_port.map(|p| format!("{}:{}", config.host, p));
+    #[cfg(feature = "tls")]
+    let state = Arc::new(config);
+    #[cfg(not(feature = "tls"))]
+    drop(config);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -39,7 +45,7 @@ pub async fn serve() -> Result<()> {
     // Must wrap Router from outside, rewrites path before route matching.
     let app = NormalizePathLayer::trim_trailing_slash().layer(router);
 
-    let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
+    let http_listener = tokio::net::TcpListener::bind(&http_addr).await?;
     tracing::info!(addr = %http_addr, "listening (http)");
 
     let http_task = tokio::spawn({
@@ -51,11 +57,13 @@ pub async fn serve() -> Result<()> {
     });
 
     #[cfg(feature = "tls")]
-    let tls_task = tokio::spawn(spawn_tls(tls_addr.to_string(), app.clone()));
+    let tls_task = tls_addr.map(|addr| tokio::spawn(spawn_tls(addr, app.clone(), state.clone())));
 
     http_task.await??;
     #[cfg(feature = "tls")]
-    tls_task.await??;
+    if let Some(t) = tls_task {
+        t.await??;
+    }
     Ok(())
 }
 
@@ -63,9 +71,10 @@ pub async fn serve() -> Result<()> {
 async fn spawn_tls(
     addr: String,
     app: tower_http::normalize_path::NormalizePath<Router>,
+    state: Arc<Config>,
 ) -> anyhow::Result<()> {
     use std::net::SocketAddr;
-    let cfg = crate::tls::build_config(None, None).await?;
+    let cfg = crate::tls::build_config(state.tls_cert.as_deref(), state.tls_key.as_deref()).await?;
     let socket: SocketAddr = addr.parse()?;
     tracing::info!(%addr, "listening (https)");
     let svc = ServiceExt::<axum::extract::Request>::into_make_service(app);

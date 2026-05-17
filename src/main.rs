@@ -1,6 +1,8 @@
+mod config;
 mod server;
 #[cfg(feature = "tls")]
 mod tls;
+mod util;
 
 use anyhow::Result;
 use clap::Parser;
@@ -22,7 +24,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| EnvFilter::new("figma_agent=info")),
         )
         .init();
-    let _cli = Cli::parse();
-    tracing::info!("starting figma-agent v{}", env!("CARGO_PKG_VERSION"));
-    server::serve().await
+    let cli = Cli::parse();
+    let config = config::Config::load(cli.config.as_deref())?;
+    server::serve(config).await
 }
