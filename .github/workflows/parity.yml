@@ -114,35 +114,13 @@ jobs:
             cat /tmp/orig.log
             exit 1
           }
-          # Probe a few candidate URLs with diagnostics so the next iteration
-          # can pin down the right path / scheme.
-          for ATTEMPT in http_files https_files http_root http_preview; do
-            case "$ATTEMPT" in
-              http_files)    URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files"; FLAGS="" ;;
-              https_files)   URL="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/font-files"; FLAGS="-k" ;;
-              http_root)     URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/"; FLAGS="" ;;
-              http_preview)  URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"; FLAGS="" ;;
-            esac
-            echo "--- probe $ATTEMPT: $URL ---"
-            curl -s $FLAGS -D /tmp/h -o /tmp/b -w 'HTTP %{http_code}  size=%{size_download}\n' --max-time 30 \
-              -H "${{ env.ORIGIN_HEADER }}" \
-              "$URL" || true
-            echo "response headers:"
-            head -20 /tmp/h
-            echo "body (first 300 bytes):"
-            head -c 300 /tmp/b
-            echo
-          done
           echo "warming upstream..."
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 60 \
               -H "${{ env.ORIGIN_HEADER }}" \
-              "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" 2>/dev/null || echo 000)
+              "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files" 2>/dev/null || echo 000)
             echo "  attempt $i: HTTP $CODE"
-            if [ "${CODE:0:1}" = "2" ]; then
-              echo "upstream warmed"
-              break
-            fi
+            [ "${CODE:0:1}" = "2" ] && break
             sleep 5
           done
           if [ "${CODE:0:1}" != "2" ]; then
@@ -169,64 +147,63 @@ jobs:
           }
           curl -fs --max-time 240 --retry 30 --retry-all-errors --retry-delay 2 \
             -H "${{ env.ORIGIN_HEADER }}" \
-            "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null
+            "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files" > /dev/null
           echo "ours warmed"
 
-      - name: Compare /font-files (HTTP)
+      - name: Compare /figma/font-files (HTTP)
         run: |
-          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}"
-          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}"
-          # Mask volatile top-level fields. Strip our extra `path` per font.
-          # Sort fonts by (postscript, family, style) for deterministic order.
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files"
+          # Sort fontFiles by path and faces within each path by postscript
+          # to neutralise enumeration order.
           NORM='{
-            modified_fonts: .modified_fonts,
-            fonts: (.fonts | sort_by(.postscript, .family, .style))
+            version, package, modified_at, modified_fonts, machine_id, launch_source,
+            fontFiles: (.fontFiles
+              | to_entries
+              | sort_by(.key)
+              | map({key, value: (.value | sort_by(.postscript, .style))})
+              | from_entries)
           }'
-          NORM_OURS='{
-            modified_fonts: .modified_fonts,
-            fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
-          }'
-          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-files.json
-          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-files.json
-          diff -u /tmp/orig-files.json /tmp/ours-files.json
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-http.json
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-http.json
+          diff -u /tmp/orig-http.json /tmp/ours-http.json
 
-      - name: Compare /font-files (HTTPS)
+      - name: Compare /figma/font-files (HTTPS)
         run: |
-          ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}"
-          OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}"
+          ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/figma/font-files"
+          OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}/figma/font-files"
           NORM='{
-            modified_fonts: .modified_fonts,
-            fonts: (.fonts | sort_by(.postscript, .family, .style))
+            version, package, modified_at, modified_fonts, machine_id, launch_source,
+            fontFiles: (.fontFiles
+              | to_entries
+              | sort_by(.key)
+              | map({key, value: (.value | sort_by(.postscript, .style))})
+              | from_entries)
           }'
-          NORM_OURS='{
-            modified_fonts: .modified_fonts,
-            fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
-          }'
-          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-tls.json
-          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-tls.json
-          diff -u /tmp/orig-tls.json /tmp/ours-tls.json
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-https.json
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-https.json
+          diff -u /tmp/orig-https.json /tmp/ours-https.json
 
-      - name: Compare sampled /font-file binaries
+      - name: Compare sampled /figma/font-file binaries
         run: |
-          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}"
-          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}"
-          # Sample 8 fonts under the upstream 32 MB ceiling.
-          # Path comes from our response since upstream omits the field.
-          mapfile -t SAMPLES < <(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" \
-            | jq -r '.fonts | sort_by(.postscript) | .[].path' \
-            | awk '!seen[$0]++' \
-            | while read -r p; do
-                [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
-              done \
-            | head -8)
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-file"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-file"
+          # Sample 8 fonts shared by both responses, under the upstream 32 MB cap.
+          mapfile -t SAMPLES < <(
+            jq -r '.fontFiles | keys[]' /tmp/orig-http.json \
+              | while read -r p; do
+                  [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
+                done \
+              | head -8
+          )
           if [ "${#SAMPLES[@]}" -eq 0 ]; then
             echo "::error::no sampleable fonts found"
             exit 1
           fi
           for p in "${SAMPLES[@]}"; do
             ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
-            SHA_ORIG=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
-            SHA_OURS=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_ORIG=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_OURS=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS?file=$ENC" | shasum -a 256 | awk '{print $1}')
             if [ "$SHA_ORIG" != "$SHA_OURS" ]; then
               echo "::error::binary diff: $p"
               echo "  upstream: $SHA_ORIG"
