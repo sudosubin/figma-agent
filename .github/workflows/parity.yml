@@ -29,9 +29,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ARM (Apple Silicon).
           - runner: macos-latest
             arch_slug: mac-arm
-          - runner: macos-13
+          # Intel. `macos-13` was sunset on 2025-12-08; the only currently
+          # supported Intel-capable hosted label is `macos-15-intel`.
+          - runner: macos-15-intel
             arch_slug: mac
     runs-on: ${{ matrix.runner }}
     steps:
