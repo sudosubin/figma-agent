@@ -113,7 +113,10 @@ jobs:
             exit 1
           }
           echo "warming upstream (enumeration may take ~1 min)..."
-          curl -fs --max-time 240 "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" > /dev/null || {
+          # Retry across the race window where listen() has happened but
+          # actix workers have not yet wired up the routes.
+          curl -fs --max-time 240 --retry 60 --retry-all-errors --retry-delay 2 \
+            "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" > /dev/null || {
             echo "::error::upstream /font-files request failed"
             cat /tmp/orig.log
             exit 1
@@ -136,7 +139,8 @@ jobs:
             cat /tmp/ours.log
             exit 1
           }
-          curl -fs --max-time 240 "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null
+          curl -fs --max-time 240 --retry 30 --retry-all-errors --retry-delay 2 \
+            "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null
           echo "ours warmed"
 
       - name: Compare /font-files (HTTP)
