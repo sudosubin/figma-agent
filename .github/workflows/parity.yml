@@ -112,16 +112,28 @@ jobs:
             cat /tmp/orig.log
             exit 1
           }
-          echo "warming upstream (enumeration may take ~1 min)..."
-          # Retry across the race window where listen() has happened but
-          # actix workers have not yet wired up the routes.
-          curl -fs --max-time 240 --retry 60 --retry-all-errors --retry-delay 2 \
-            "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" > /dev/null || {
-            echo "::error::upstream /font-files request failed"
+          echo "warming upstream (per-attempt HTTP code shown)..."
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 30 \
+              "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" 2>/dev/null || echo 000)
+            SIZE=$(wc -c < /tmp/orig-resp 2>/dev/null || echo 0)
+            echo "  attempt $i: HTTP $CODE (body $SIZE bytes)"
+            if [ "${CODE:0:1}" = "2" ]; then
+              echo "upstream warmed"
+              break
+            fi
+            [ $((i % 5)) -eq 0 ] && tail -5 /tmp/orig.log 2>/dev/null
+            sleep 5
+          done
+          if [ "${CODE:0:1}" != "2" ]; then
+            echo "::error::upstream never returned 2xx"
+            echo "--- last response body (first 500 bytes) ---"
+            head -c 500 /tmp/orig-resp || true
+            echo
+            echo "--- full orig.log ---"
             cat /tmp/orig.log
             exit 1
-          }
-          echo "upstream warmed"
+          fi
 
       - name: Start our agent and warm
         run: |
