@@ -1,9 +1,10 @@
 //! ttf-parser 0.25 exposes fvar axes but not named instances, so we walk
 //! the raw table bytes ourselves (`parse_fvar_instances`).
 
-use super::{AxisInfo, FontInfo};
+use super::{AxisInfo, FaceInfo};
 use anyhow::Result;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 pub(super) fn is_font_file(path: &Path) -> bool {
     matches!(
@@ -12,13 +13,14 @@ pub(super) fn is_font_file(path: &Path) -> bool {
     )
 }
 
-pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<FontInfo>> {
+pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<FaceInfo>> {
     let bytes = std::fs::read(path)?;
+    let modified_at = file_mtime(path);
     let face_count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
     let mut out = Vec::new();
     for index in 0..face_count {
         let Ok(face) = ttf_parser::Face::parse(&bytes, index) else { continue };
-        let base = make_info(&face, path, user_installed);
+        let base = make_info(&face, modified_at, user_installed);
         let instances = parse_fvar_instances(&face, base.variation_axes.len());
         if instances.is_empty() {
             out.push(base);
@@ -31,7 +33,7 @@ pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<Fo
     Ok(out)
 }
 
-fn make_info(face: &ttf_parser::Face, path: &Path, user_installed: bool) -> FontInfo {
+fn make_info(face: &ttf_parser::Face, modified_at: u64, user_installed: bool) -> FaceInfo {
     let family = pick_name(face, ttf_parser::name_id::FAMILY)
         .or_else(|| pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_FAMILY))
         .unwrap_or_default();
@@ -39,15 +41,13 @@ fn make_info(face: &ttf_parser::Face, path: &Path, user_installed: bool) -> Font
         .or_else(|| pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY))
         .unwrap_or_else(|| "Regular".to_string());
     let postscript = pick_name(face, ttf_parser::name_id::POST_SCRIPT_NAME).unwrap_or_default();
-    let full_name = pick_name(face, ttf_parser::name_id::FULL_NAME)
-        .unwrap_or_else(|| format!("{family} {style}"));
 
-    let weight = face.weight().to_number() as f64;
-    let stretch = stretch_to_percent(face.width());
+    let weight = face.weight().to_number();
+    let stretch = width_to_int(face.width());
     let italic = face.is_italic() || face.is_oblique();
     let variation_axes = extract_axes(face);
 
-    FontInfo {
+    FaceInfo {
         family,
         style,
         postscript,
@@ -55,16 +55,15 @@ fn make_info(face: &ttf_parser::Face, path: &Path, user_installed: bool) -> Font
         stretch,
         italic,
         variation_axes,
+        modified_at,
         user_installed,
-        name: full_name,
-        path: path.to_string_lossy().into_owned(),
     }
 }
 
 fn pick_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
     let names = face.names();
     let mut fallback = None;
-    // Prefer Windows/en-US (matches CoreText's default on orig macOS daemon).
+    // Prefer Windows/en-US (matches CoreText's default on upstream agent).
     for n in (0..names.len()).filter_map(|i| names.get(i)) {
         if n.name_id != name_id {
             continue;
@@ -100,18 +99,53 @@ fn extract_axes(face: &ttf_parser::Face) -> Vec<AxisInfo> {
         .collect()
 }
 
-fn stretch_to_percent(w: ttf_parser::Width) -> f64 {
+fn width_to_int(w: ttf_parser::Width) -> u8 {
     match w {
-        ttf_parser::Width::UltraCondensed => 50.0,
-        ttf_parser::Width::ExtraCondensed => 62.5,
-        ttf_parser::Width::Condensed => 75.0,
-        ttf_parser::Width::SemiCondensed => 87.5,
-        ttf_parser::Width::Normal => 100.0,
-        ttf_parser::Width::SemiExpanded => 112.5,
-        ttf_parser::Width::Expanded => 125.0,
-        ttf_parser::Width::ExtraExpanded => 150.0,
-        ttf_parser::Width::UltraExpanded => 200.0,
+        ttf_parser::Width::UltraCondensed => 1,
+        ttf_parser::Width::ExtraCondensed => 2,
+        ttf_parser::Width::Condensed => 3,
+        ttf_parser::Width::SemiCondensed => 4,
+        ttf_parser::Width::Normal => 5,
+        ttf_parser::Width::SemiExpanded => 6,
+        ttf_parser::Width::Expanded => 7,
+        ttf_parser::Width::ExtraExpanded => 8,
+        ttf_parser::Width::UltraExpanded => 9,
     }
+}
+
+/// Map a `wdth` axis coordinate (percent) onto the OS/2 usWidthClass
+/// bucket (1-9). Closest target wins.
+fn quantize_width(percent: f64) -> u8 {
+    const BUCKETS: &[(f64, u8)] = &[
+        (50.0, 1),
+        (62.5, 2),
+        (75.0, 3),
+        (87.5, 4),
+        (100.0, 5),
+        (112.5, 6),
+        (125.0, 7),
+        (150.0, 8),
+        (200.0, 9),
+    ];
+    let mut best = 5u8;
+    let mut best_diff = f64::INFINITY;
+    for (target, bucket) in BUCKETS {
+        let d = (percent - target).abs();
+        if d < best_diff {
+            best_diff = d;
+            best = *bucket;
+        }
+    }
+    best
+}
+
+fn file_mtime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 struct NamedInstance {
@@ -174,7 +208,7 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
     out
 }
 
-fn apply_instance(base: &FontInfo, inst: NamedInstance) -> FontInfo {
+fn apply_instance(base: &FaceInfo, inst: NamedInstance) -> FaceInfo {
     let mut info = base.clone();
     info.style = inst.style;
     if let Some(ps) = inst.postscript {
@@ -185,11 +219,10 @@ fn apply_instance(base: &FontInfo, inst: NamedInstance) -> FontInfo {
     for (axis, coord) in info.variation_axes.iter_mut().zip(inst.coords.iter()) {
         axis.value = *coord;
         match axis.tag.as_str() {
-            "wght" => info.weight = *coord,
-            "wdth" => info.stretch = *coord,
+            "wght" => info.weight = coord.round() as u16,
+            "wdth" => info.stretch = quantize_width(*coord),
             _ => {}
         }
     }
-    info.name = format!("{} {}", info.family, info.style);
     info
 }

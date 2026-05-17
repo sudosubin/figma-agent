@@ -19,17 +19,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 axum = "0.7"
 tower = "0.4"
-tower-http = { version = "0.5", features = [
-    "cors",
-    "compression-gzip",
-    "compression-deflate",
-    "compression-zstd",
-    "set-header",
-    "normalize-path",
-] }
+tower-http = { version = "0.5", features = ["normalize-path"] }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
 
 ttf-parser = "0.25"
 walkdir = "2"
