@@ -288,13 +288,9 @@ jobs:
       plan: ${{ needs.plan.outputs.val }}
     secrets: inherit
     # publish jobs get escalated permissions
-    # NOTE: contents: read is patched in manually so the nested workflow's
-    # actions/checkout step can read the repo. dist 0.30.3 does not propagate
-    # this; re-run of `dist generate` will overwrite this block.
     permissions:
-      "id-token": "write"
-      "packages": "write"
       "contents": "read"
+      "id-token": "write"
 
   announce:
     needs:
