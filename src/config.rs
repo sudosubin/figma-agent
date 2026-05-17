@@ -1,3 +1,6 @@
+//! `font_dirs` accepts either a raw path (system, `user_installed=false`)
+//! or `{ "path": "...", "user_installed": true }` for per-directory override.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -14,6 +17,8 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
+    #[serde(default = "default_font_dirs", deserialize_with = "deser_font_dirs")]
+    pub font_dirs: Vec<(PathBuf, bool)>,
 }
 
 fn default_host() -> String {
@@ -28,6 +33,35 @@ fn default_tls_port() -> Option<u16> {
     Some(44951)
 }
 
+fn default_font_dirs() -> Vec<(PathBuf, bool)> {
+    crate::fonts::default_font_dirs()
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FontDirEntry {
+    Plain(PathBuf),
+    Detailed {
+        path: PathBuf,
+        #[serde(default)]
+        user_installed: bool,
+    },
+}
+
+fn deser_font_dirs<'de, D>(d: D) -> Result<Vec<(PathBuf, bool)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries = Vec::<FontDirEntry>::deserialize(d)?;
+    Ok(entries
+        .into_iter()
+        .map(|e| match e {
+            FontDirEntry::Plain(p) => (p, false),
+            FontDirEntry::Detailed { path, user_installed } => (path, user_installed),
+        })
+        .collect())
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -36,6 +70,7 @@ impl Default for Config {
             tls_port: default_tls_port(),
             tls_cert: None,
             tls_key: None,
+            font_dirs: default_font_dirs(),
         }
     }
 }

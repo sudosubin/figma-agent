@@ -1,4 +1,5 @@
 mod config;
+mod fonts;
 mod server;
 #[cfg(feature = "tls")]
 mod tls;
