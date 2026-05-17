@@ -39,11 +39,16 @@ pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<Fa
 }
 
 fn make_info(face: &ttf_parser::Face, modified_at: u64, user_installed: bool) -> FaceInfo {
-    let family = pick_name(face, ttf_parser::name_id::FAMILY)
-        .or_else(|| pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_FAMILY))
+    // Prefer the typographic name (16/17) over the legacy family (1/2):
+    // for many TTC entries the legacy slot bakes the style into the family
+    // (e.g. NameID 1 = "NanumMyeongjoExtraBold"), while the typographic
+    // slot stays style-agnostic ("Nanum Myeongjo"), which is what CoreText
+    // surfaces.
+    let family = pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_FAMILY)
+        .or_else(|| pick_name(face, ttf_parser::name_id::FAMILY))
         .unwrap_or_default();
-    let style = pick_name(face, ttf_parser::name_id::SUBFAMILY)
-        .or_else(|| pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY))
+    let style = pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY)
+        .or_else(|| pick_name(face, ttf_parser::name_id::SUBFAMILY))
         .unwrap_or_else(|| "Regular".to_string());
     let postscript = pick_name(face, ttf_parser::name_id::POST_SCRIPT_NAME).unwrap_or_default();
 
