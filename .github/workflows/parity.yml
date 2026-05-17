@@ -114,26 +114,39 @@ jobs:
             cat /tmp/orig.log
             exit 1
           }
-          echo "warming upstream (per-attempt HTTP code shown)..."
-          for i in $(seq 1 30); do
+          # Probe a few candidate URLs with diagnostics so the next iteration
+          # can pin down the right path / scheme.
+          for ATTEMPT in http_files https_files http_root http_preview; do
+            case "$ATTEMPT" in
+              http_files)    URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files"; FLAGS="" ;;
+              https_files)   URL="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/font-files"; FLAGS="-k" ;;
+              http_root)     URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/"; FLAGS="" ;;
+              http_preview)  URL="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"; FLAGS="" ;;
+            esac
+            echo "--- probe $ATTEMPT: $URL ---"
+            curl -s $FLAGS -D /tmp/h -o /tmp/b -w 'HTTP %{http_code}  size=%{size_download}\n' --max-time 30 \
+              -H "${{ env.ORIGIN_HEADER }}" \
+              "$URL" || true
+            echo "response headers:"
+            head -20 /tmp/h
+            echo "body (first 300 bytes):"
+            head -c 300 /tmp/b
+            echo
+          done
+          echo "warming upstream..."
+          for i in $(seq 1 20); do
             CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 60 \
               -H "${{ env.ORIGIN_HEADER }}" \
               "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" 2>/dev/null || echo 000)
-            SIZE=$(wc -c < /tmp/orig-resp 2>/dev/null || echo 0)
-            echo "  attempt $i: HTTP $CODE (body $SIZE bytes)"
+            echo "  attempt $i: HTTP $CODE"
             if [ "${CODE:0:1}" = "2" ]; then
               echo "upstream warmed"
               break
             fi
-            [ $((i % 5)) -eq 0 ] && tail -5 /tmp/orig.log 2>/dev/null
             sleep 5
           done
           if [ "${CODE:0:1}" != "2" ]; then
             echo "::error::upstream never returned 2xx"
-            echo "--- last response body (first 500 bytes) ---"
-            head -c 500 /tmp/orig-resp || true
-            echo
-            echo "--- full orig.log ---"
             cat /tmp/orig.log
             exit 1
           fi
