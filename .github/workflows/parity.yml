@@ -156,12 +156,14 @@ jobs:
           OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files"
           # Sort fontFiles by path and faces within each path by postscript
           # to neutralise enumeration order.
+          # `modified_at` per face is upstream's cache-insertion time (not the
+          # file's mtime); impossible to match without copying upstream's cache.
           NORM='{
             version, package, modified_at, modified_fonts, machine_id, launch_source,
             fontFiles: (.fontFiles
               | to_entries
               | sort_by(.key)
-              | map({key, value: (.value | sort_by(.postscript, .style))})
+              | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
               | from_entries)
           }'
           curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-http.json
@@ -172,12 +174,14 @@ jobs:
         run: |
           ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/figma/font-files"
           OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}/figma/font-files"
+          # `modified_at` per face is upstream's cache-insertion time (not the
+          # file's mtime); impossible to match without copying upstream's cache.
           NORM='{
             version, package, modified_at, modified_fonts, machine_id, launch_source,
             fontFiles: (.fontFiles
               | to_entries
               | sort_by(.key)
-              | map({key, value: (.value | sort_by(.postscript, .style))})
+              | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
               | from_entries)
           }'
           curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-https.json
