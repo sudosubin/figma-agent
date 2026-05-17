@@ -1,0 +1,23 @@
+[package]
+name = "figma-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local font helper for Figma, Linux and macOS"
+repository = "https://github.com/sudosubin/figma-agent"
+
+[[bin]]
+name = "figma-agent"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
