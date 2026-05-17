@@ -1,3 +1,5 @@
+mod server;
+
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -20,5 +22,5 @@ async fn main() -> Result<()> {
         .init();
     let _cli = Cli::parse();
     tracing::info!("starting figma-agent v{}", env!("CARGO_PKG_VERSION"));
-    Ok(())
+    server::serve().await
 }

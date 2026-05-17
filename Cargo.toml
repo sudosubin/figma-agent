@@ -17,6 +17,17 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = [
+    "cors",
+    "compression-gzip",
+    "compression-deflate",
+    "compression-zstd",
+    "set-header",
+    "normalize-path",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
