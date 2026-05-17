@@ -2,9 +2,11 @@
 //! `Access-Control-Allow-Private-Network: true`.
 
 use crate::config::Config;
+use crate::routes;
 use anyhow::Result;
 use axum::{
     http::{header, HeaderName, HeaderValue, Method},
+    routing::get,
     Router,
     ServiceExt,
 };
@@ -21,10 +23,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let http_addr = format!("{}:{}", config.host, config.port);
     #[cfg(feature = "tls")]
     let tls_addr = config.tls_port.map(|p| format!("{}:{}", config.host, p));
-    #[cfg(feature = "tls")]
     let state = Arc::new(config);
-    #[cfg(not(feature = "tls"))]
-    drop(config);
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -38,6 +37,8 @@ pub async fn serve(config: Config) -> Result<()> {
     );
 
     let router = Router::new()
+        .route("/font-files", get(routes::font_files))
+        .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(server_header)
         .layer(cors);
