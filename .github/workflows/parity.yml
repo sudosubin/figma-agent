@@ -44,7 +44,7 @@ jobs:
             font-inter \
             font-recursive \
             font-fira-code \
-            font-source-han-sans-jp
+            font-source-han-sans-vf
 
       - name: Cache Figma DMG
         id: dmg-cache
