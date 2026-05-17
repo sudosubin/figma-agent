@@ -1,4 +1,6 @@
 mod server;
+#[cfg(feature = "tls")]
+mod tls;
 
 use anyhow::Result;
 use clap::Parser;
