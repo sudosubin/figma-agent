@@ -27,5 +27,7 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let config = config::Config::load(cli.config.as_deref())?;
+    let count = fonts::discover(&config.font_dirs).len();
+    tracing::info!(count, "enumerated fonts");
     server::serve(config).await
 }
