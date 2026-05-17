@@ -7,7 +7,6 @@
 
 mod cache;
 mod dirs;
-#[cfg(not(target_os = "macos"))]
 mod parser;
 mod platform;
 
@@ -22,10 +21,13 @@ use std::sync::{Arc, OnceLock};
 pub struct AxisInfo {
     pub tag: String,
     pub name: String,
-    pub value: f64,
-    pub min: f64,
-    pub max: f64,
-    pub default: f64,
+    // Stored as f32 to match upstream's serialised precision: ttf-parser
+    // gives fixed16.16 fractions whose nearest f32 prints with ~7 digits
+    // (e.g. "3.199997"); f64 would print the full 17-digit f32 mantissa.
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
     pub hidden: bool,
 }
 

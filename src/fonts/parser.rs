@@ -6,6 +6,7 @@ use anyhow::Result;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+#[cfg(not(target_os = "macos"))]
 pub(super) fn is_font_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
@@ -21,8 +22,6 @@ pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<Fa
     for index in 0..face_count {
         let Ok(face) = ttf_parser::Face::parse(&bytes, index) else { continue };
         let base = make_info(&face, modified_at, user_installed);
-        // Drop hidden/system-internal faces; upstream excludes empty or
-        // dot-prefixed family names.
         if base.family.is_empty() || base.family.starts_with('.') {
             continue;
         }
@@ -49,11 +48,12 @@ fn make_info(face: &ttf_parser::Face, modified_at: u64, user_installed: bool) ->
         .unwrap_or_default();
     let style = pick_name(face, ttf_parser::name_id::TYPOGRAPHIC_SUBFAMILY)
         .or_else(|| pick_name(face, ttf_parser::name_id::SUBFAMILY))
+        .map(|s| canonicalize_style(face, &s))
         .unwrap_or_else(|| "Regular".to_string());
     let postscript = pick_name(face, ttf_parser::name_id::POST_SCRIPT_NAME).unwrap_or_default();
 
     let weight = face.weight().to_number();
-    let stretch = width_to_int(face.width());
+    let stretch = read_os2_width(face);
     let italic = face.is_italic() || face.is_oblique();
     let variation_axes = extract_axes(face);
 
@@ -110,34 +110,49 @@ fn extract_axes(face: &ttf_parser::Face) -> Vec<AxisInfo> {
         .into_iter()
         .map(|a| AxisInfo {
             tag: a.tag.to_string(),
-            name: face
-                .names()
-                .into_iter()
-                .find(|n| n.name_id == a.name_id)
-                .and_then(|n| n.to_string())
-                .unwrap_or_default(),
+            name: pick_name(face, a.name_id).unwrap_or_default(),
             // Overridden later if a named-instance applies.
-            value: a.def_value as f64,
-            min: a.min_value as f64,
-            max: a.max_value as f64,
-            default: a.def_value as f64,
+            value: a.def_value,
+            min: a.min_value,
+            max: a.max_value,
+            default: a.def_value,
             hidden: a.hidden,
         })
         .collect()
 }
 
-fn width_to_int(w: ttf_parser::Width) -> u8 {
-    match w {
-        ttf_parser::Width::UltraCondensed => 1,
-        ttf_parser::Width::ExtraCondensed => 2,
-        ttf_parser::Width::Condensed => 3,
-        ttf_parser::Width::SemiCondensed => 4,
-        ttf_parser::Width::Normal => 5,
-        ttf_parser::Width::SemiExpanded => 6,
-        ttf_parser::Width::Expanded => 7,
-        ttf_parser::Width::ExtraExpanded => 8,
-        ttf_parser::Width::UltraExpanded => 9,
+/// Match upstream's Galvji-Oblique → "Italic" rewrite. The trigger is an
+/// italic face whose en-US Subfamily reads "Oblique" while a sibling
+/// Win/en-* entry already spells the style as "Italic". Fonts without
+/// such a sibling (Avenir-Oblique, Helvetica-Oblique) keep "Oblique".
+fn canonicalize_style(face: &ttf_parser::Face, style: &str) -> String {
+    let italic = face.is_italic() || face.is_oblique();
+    if !italic || !style.eq_ignore_ascii_case("Oblique") {
+        return style.to_string();
     }
+    let names = face.names();
+    let has_italic_sibling = (0..names.len()).filter_map(|i| names.get(i)).any(|n| {
+        n.name_id == ttf_parser::name_id::SUBFAMILY
+            && n.platform_id == ttf_parser::PlatformId::Windows
+            // English regional langs all end in 0x09 in the low byte.
+            && n.language_id & 0xff == 0x09
+            && n.to_string().is_some_and(|s| s.eq_ignore_ascii_case("Italic"))
+    });
+    if has_italic_sibling { "Italic".to_string() } else { style.to_string() }
+}
+
+/// Read `OS/2.usWidthClass` directly: ttf-parser maps the out-of-range
+/// value 0 to `Normal` (5), but upstream and CoreText both surface it as
+/// the minimum bucket (1).
+fn read_os2_width(face: &ttf_parser::Face) -> u8 {
+    let Some(data) = face.raw_face().table(ttf_parser::Tag::from_bytes(b"OS/2")) else {
+        return 5;
+    };
+    if data.len() < 8 {
+        return 5;
+    }
+    let raw = u16::from_be_bytes([data[6], data[7]]);
+    raw.clamp(1, 9) as u8
 }
 
 /// Map a `wdth` axis coordinate (percent) onto the OS/2 usWidthClass
@@ -166,14 +181,13 @@ fn quantize_width(percent: f64) -> u8 {
     best
 }
 
-fn file_ctime(path: &Path) -> u64 {
+pub(super) fn file_ctime(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.ctime() as u64).unwrap_or(0)
 }
 
 struct NamedInstance {
     style: String,
-    postscript: Option<String>,
-    coords: Vec<f64>,
+    coords: Vec<f32>,
 }
 
 /// fvar layout (MS OT spec): 16-byte header, then `axisCount` * 20-byte
@@ -196,11 +210,8 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
     let instance_count = u16_at(12) as usize;
     let instance_size = u16_at(14) as usize;
 
-    // instanceSize = 4 + axisCount*4, or +2 if the optional psNameID trails.
     let coords_bytes = axis_count.saturating_mul(4);
-    let has_ps_name = instance_size >= coords_bytes + 6;
-    let min_required = coords_bytes + 4;
-    if instance_size < min_required {
+    if instance_size < coords_bytes + 4 {
         return Vec::new();
     }
 
@@ -213,36 +224,36 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
         };
 
         let subfamily_id = u16_at(base);
-        // Skip 2 bytes of reserved instance flags before the coords.
-        let coords: Vec<f64> = (0..axis_count)
-            .map(|a| i32_at(base + 4 + a * 4) as f64 / 65536.0)
+        // Coords are fixed16.16 (i32 / 65536); the +4 skips subfamilyID
+        // and reserved flags. f32 keeps upstream's serialised precision.
+        let coords: Vec<f32> = (0..axis_count)
+            .map(|a| i32_at(base + 4 + a * 4) as f32 / 65536.0)
             .collect();
-        let ps_name = if has_ps_name {
-            let id = u16_at(base + 4 + coords_bytes);
-            if id == 0xFFFF { None } else { pick_name(face, id) }
-        } else {
-            None
-        };
-
         let style = pick_name(face, subfamily_id).unwrap_or_else(|| "Regular".to_string());
-        out.push(NamedInstance { style, postscript: ps_name, coords });
+        out.push(NamedInstance { style, coords });
     }
     out
 }
 
+/// Upstream builds the instance postscript as
+/// `family.replace(' ', '') + '-' + style.replace(' ', '')`, ignoring
+/// both the per-instance psNameID (sometimes lower-case CJK region codes
+/// like "cn" instead of "SC") and NameID 25 (often baked with the style,
+/// e.g. "STIXTwoTextItalic"). wght truncates to u16 (Skia-Bold's
+/// wght=1.949997 surfaces as weight=1).
 fn apply_instance(base: &FaceInfo, inst: NamedInstance) -> FaceInfo {
     let mut info = base.clone();
+    info.postscript = format!(
+        "{}-{}",
+        base.family.replace(' ', ""),
+        inst.style.replace(' ', "")
+    );
     info.style = inst.style;
-    if let Some(ps) = inst.postscript {
-        info.postscript = ps;
-    }
-    // wght/wdth are surfaced at the top level so `weight`/`stretch` reflect
-    // the instance, not the file-level defaults.
     for (axis, coord) in info.variation_axes.iter_mut().zip(inst.coords.iter()) {
         axis.value = *coord;
         match axis.tag.as_str() {
-            "wght" => info.weight = coord.round() as u16,
-            "wdth" => info.stretch = quantize_width(*coord),
+            "wght" => info.weight = *coord as u16,
+            "wdth" => info.stretch = quantize_width(*coord as f64),
             _ => {}
         }
     }

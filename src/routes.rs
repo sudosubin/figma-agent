@@ -78,10 +78,14 @@ async fn serve_file(cfg: &Config, q: &FileQuery) -> Result<Response, StatusCode>
     if !q.file.starts_with('/') || q.file.contains("..") {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let path = PathBuf::from(&q.file);
-    if !cfg.font_dirs.iter().any(|(dir, _)| path.starts_with(dir)) {
+    // Only stream paths we enumerated, so the endpoint can't be abused to
+    // exfiltrate arbitrary files. The OS registry (CoreText / fc-list) is
+    // the source of truth.
+    let font_files = fonts::discover(&cfg.font_dirs);
+    if !font_files.contains_key(&q.file) {
         return Err(StatusCode::NOT_FOUND);
     }
+    let path = PathBuf::from(&q.file);
     let meta = tokio::fs::metadata(&path).await.map_err(|_| StatusCode::NOT_FOUND)?;
     if !meta.is_file() || meta.len() > MAX_FONT_SIZE {
         return Err(StatusCode::NOT_FOUND);
