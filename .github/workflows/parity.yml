@@ -19,6 +19,8 @@ env:
   ORIG_TLS_PORT: "44960"
   OUR_HTTP_PORT: "45000"
   OUR_TLS_PORT: "45001"
+  # Upstream rejects requests without this Origin header.
+  ORIGIN_HEADER: "Origin: https://www.figma.com"
 
 jobs:
   parity:
@@ -114,7 +116,8 @@ jobs:
           }
           echo "warming upstream (per-attempt HTTP code shown)..."
           for i in $(seq 1 30); do
-            CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 30 \
+            CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 60 \
+              -H "${{ env.ORIGIN_HEADER }}" \
               "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" 2>/dev/null || echo 000)
             SIZE=$(wc -c < /tmp/orig-resp 2>/dev/null || echo 0)
             echo "  attempt $i: HTTP $CODE (body $SIZE bytes)"
@@ -152,6 +155,7 @@ jobs:
             exit 1
           }
           curl -fs --max-time 240 --retry 30 --retry-all-errors --retry-delay 2 \
+            -H "${{ env.ORIGIN_HEADER }}" \
             "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null
           echo "ours warmed"
 
@@ -169,8 +173,8 @@ jobs:
             modified_fonts: .modified_fonts,
             fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
           }'
-          curl -fs "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-files.json
-          curl -fs "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-files.json
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-files.json
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-files.json
           diff -u /tmp/orig-files.json /tmp/ours-files.json
 
       - name: Compare /font-files (HTTPS)
@@ -185,8 +189,8 @@ jobs:
             modified_fonts: .modified_fonts,
             fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
           }'
-          curl -fsk "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-tls.json
-          curl -fsk "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-tls.json
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-tls.json
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-tls.json
           diff -u /tmp/orig-tls.json /tmp/ours-tls.json
 
       - name: Compare sampled /font-file binaries
@@ -195,7 +199,7 @@ jobs:
           OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}"
           # Sample 8 fonts under the upstream 32 MB ceiling.
           # Path comes from our response since upstream omits the field.
-          mapfile -t SAMPLES < <(curl -fs "$OURS/font-files" \
+          mapfile -t SAMPLES < <(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-files" \
             | jq -r '.fonts | sort_by(.postscript) | .[].path' \
             | awk '!seen[$0]++' \
             | while read -r p; do
@@ -208,8 +212,8 @@ jobs:
           fi
           for p in "${SAMPLES[@]}"; do
             ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
-            SHA_ORIG=$(curl -fs "$ORIG/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
-            SHA_OURS=$(curl -fs "$OURS/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_ORIG=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_OURS=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
             if [ "$SHA_ORIG" != "$SHA_OURS" ]; then
               echo "::error::binary diff: $p"
               echo "  upstream: $SHA_ORIG"
