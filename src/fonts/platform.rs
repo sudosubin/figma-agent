@@ -22,160 +22,109 @@ pub(super) fn enumerate(dirs: &[(PathBuf, bool)]) -> FontFiles {
 mod macos {
     use super::FontFiles;
     use crate::fonts::{dirs, parser, FaceInfo};
+    use core_foundation::array::CFArray;
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    use core_foundation::url::CFURL;
+    use core_text::font_descriptor::{
+        kCTFontFamilyNameAttribute, kCTFontNameAttribute, kCTFontStyleNameAttribute,
+        CTFontDescriptor, CTFontDescriptorCopyAttribute,
+    };
+    use core_text::font_manager::{
+        CTFontManagerCopyAvailableFontURLs, CTFontManagerCreateFontDescriptorsFromURL,
+    };
     use std::collections::HashSet;
-    use std::os::raw::c_void;
     use std::path::{Path, PathBuf};
 
-    type CFTypeRef = *const c_void;
-    type CFArrayRef = *const c_void;
-    type CFStringRef = *const c_void;
-    type CFURLRef = *const c_void;
-    type CTFontDescriptorRef = *const c_void;
-
-    const KCFURL_POSIX_PATH_STYLE: u32 = 0;
-    const KCFSTRING_ENCODING_UTF8: u32 = 0x0800_0100;
     /// Mach-O resource-fork suffix CT bakes into URLs for `.dfont`-style
     /// resource files; the on-disk file lives at the path without it.
     const RSRC_SUFFIX: &str = "/..namedfork/rsrc";
 
-    #[link(name = "CoreText", kind = "framework")]
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CTFontManagerCopyAvailableFontURLs() -> CFArrayRef;
-        fn CTFontManagerCreateFontDescriptorsFromURL(url: CFURLRef) -> CFArrayRef;
-        fn CTFontDescriptorCopyAttribute(
-            descriptor: CTFontDescriptorRef,
-            attribute: CFStringRef,
-        ) -> CFTypeRef;
-        fn CFRelease(cf: CFTypeRef);
-        fn CFArrayGetCount(arr: CFArrayRef) -> isize;
-        fn CFArrayGetValueAtIndex(arr: CFArrayRef, idx: isize) -> *const c_void;
-        fn CFURLCopyFileSystemPath(url: CFURLRef, style: u32) -> CFStringRef;
-        fn CFURLCreateFromFileSystemRepresentation(
-            allocator: *const c_void,
-            buf: *const u8,
-            len: isize,
-            is_directory: bool,
-        ) -> CFURLRef;
-        fn CFStringGetLength(s: CFStringRef) -> isize;
-        fn CFStringGetMaximumSizeForEncoding(len: isize, enc: u32) -> isize;
-        fn CFStringGetCString(s: CFStringRef, buf: *mut u8, buf_size: isize, enc: u32) -> bool;
-
-        static kCTFontFamilyNameAttribute: CFStringRef;
-        static kCTFontNameAttribute: CFStringRef;
-        static kCTFontStyleNameAttribute: CFStringRef;
-    }
-
-    unsafe fn cfstr_to_string(s: CFStringRef) -> Option<String> {
-        if s.is_null() {
-            return None;
-        }
-        let len = CFStringGetLength(s);
-        let max = CFStringGetMaximumSizeForEncoding(len, KCFSTRING_ENCODING_UTF8) + 1;
-        let mut buf = vec![0u8; max as usize];
-        if !CFStringGetCString(s, buf.as_mut_ptr(), max, KCFSTRING_ENCODING_UTF8) {
-            return None;
-        }
-        let end = buf.iter().position(|&b| b == 0)?;
-        std::str::from_utf8(&buf[..end]).ok().map(|s| s.to_string())
-    }
-
-    unsafe fn cfurl_to_path(url: CFURLRef) -> Option<PathBuf> {
-        if url.is_null() {
-            return None;
-        }
-        let s = CFURLCopyFileSystemPath(url, KCFURL_POSIX_PATH_STYLE);
-        if s.is_null() {
-            return None;
-        }
-        let out = cfstr_to_string(s);
-        CFRelease(s);
-        let s = out?;
-        let trimmed = s.strip_suffix(RSRC_SUFFIX).unwrap_or(&s);
-        Some(PathBuf::from(trimmed))
-    }
-
     fn ct_font_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
+        let urls: CFArray<CFURL> =
+            unsafe { TCFType::wrap_under_create_rule(CTFontManagerCopyAvailableFontURLs()) };
+        let mut paths = Vec::with_capacity(urls.len() as usize);
         let mut seen = HashSet::new();
-        unsafe {
-            let urls = CTFontManagerCopyAvailableFontURLs();
-            if urls.is_null() {
-                return paths;
+        for url in urls.iter() {
+            let Some(p) = url.to_path() else { continue };
+            let trimmed = strip_rsrc_suffix(p);
+            if seen.insert(trimmed.clone()) {
+                paths.push(trimmed);
             }
-            for i in 0..CFArrayGetCount(urls) {
-                let url = CFArrayGetValueAtIndex(urls, i) as CFURLRef;
-                if let Some(p) = cfurl_to_path(url) {
-                    if seen.insert(p.clone()) {
-                        paths.push(p);
-                    }
-                }
-            }
-            CFRelease(urls);
         }
         paths
     }
 
-    /// Last-resort face info for files ttf-parser can't open (e.g.
-    /// `NISC18030.ttf`, an Apple bitmap font with no `head` table). CT
-    /// happily parses these; we copy the three name attributes and use
-    /// generic regular-weight defaults.
-    unsafe fn ct_fallback_faces(path: &Path, user_installed: bool) -> Vec<FaceInfo> {
-        let bytes = path.as_os_str().as_encoded_bytes();
-        let cf_url = CFURLCreateFromFileSystemRepresentation(
-            std::ptr::null(),
-            bytes.as_ptr(),
-            bytes.len() as isize,
-            false,
-        );
-        if cf_url.is_null() {
-            return Vec::new();
+    fn strip_rsrc_suffix(p: PathBuf) -> PathBuf {
+        let s = p.to_string_lossy();
+        match s.strip_suffix(RSRC_SUFFIX) {
+            Some(stripped) => PathBuf::from(stripped),
+            None => p,
         }
-        let descs = CTFontManagerCreateFontDescriptorsFromURL(cf_url);
-        CFRelease(cf_url);
-        if descs.is_null() {
-            return Vec::new();
-        }
-        let modified_at = parser::file_ctime(path);
-        let mut out = Vec::new();
-        for j in 0..CFArrayGetCount(descs) {
-            let desc = CFArrayGetValueAtIndex(descs, j) as CTFontDescriptorRef;
-            if desc.is_null() {
-                continue;
-            }
-            let family = copy_string_attr(desc, kCTFontFamilyNameAttribute);
-            if family.is_empty() || family.starts_with('.') {
-                continue;
-            }
-            let postscript = copy_string_attr(desc, kCTFontNameAttribute);
-            let style = {
-                let s = copy_string_attr(desc, kCTFontStyleNameAttribute);
-                if s.is_empty() { "Regular".to_string() } else { s }
-            };
-            out.push(FaceInfo {
-                family,
-                style,
-                postscript,
-                weight: 400,
-                stretch: 5,
-                italic: false,
-                variation_axes: Vec::new(),
-                modified_at,
-                user_installed,
-            });
-        }
-        CFRelease(descs);
-        out
     }
 
-    unsafe fn copy_string_attr(desc: CTFontDescriptorRef, key: CFStringRef) -> String {
-        let v = CTFontDescriptorCopyAttribute(desc, key);
-        if v.is_null() {
-            return String::new();
+    /// Read a CFString-valued descriptor attribute. Returns the empty
+    /// string when the attribute is missing or non-string, matching the
+    /// behaviour of the pre-refactor manual FFI helper.
+    fn copy_string_attr(
+        desc: &CTFontDescriptor,
+        key: core_foundation::string::CFStringRef,
+    ) -> String {
+        use core_foundation::base::CFType;
+        unsafe {
+            let value = CTFontDescriptorCopyAttribute(desc.as_concrete_TypeRef(), key);
+            if value.is_null() {
+                return String::new();
+            }
+            let any = CFType::wrap_under_create_rule(value);
+            if !any.instance_of::<CFString>() {
+                return String::new();
+            }
+            CFString::wrap_under_get_rule(value as _).to_string()
         }
-        let out = cfstr_to_string(v as CFStringRef).unwrap_or_default();
-        CFRelease(v);
-        out
+    }
+
+    /// Last-resort face info for files ttf-parser can't open (e.g.
+    /// `NISC18030.ttf`, an Apple bitmap font with no `head` table). CT
+    /// happily parses these; copy the three name attributes and use
+    /// generic regular-weight defaults.
+    fn ct_fallback_faces(path: &Path, user_installed: bool) -> Vec<FaceInfo> {
+        let Some(url) = CFURL::from_path(path, false) else {
+            return Vec::new();
+        };
+        let descs: CFArray<CTFontDescriptor> = unsafe {
+            let raw = CTFontManagerCreateFontDescriptorsFromURL(url.as_concrete_TypeRef());
+            if raw.is_null() {
+                return Vec::new();
+            }
+            TCFType::wrap_under_create_rule(raw)
+        };
+        let modified_at = parser::file_ctime(path);
+        descs
+            .iter()
+            .filter_map(|desc| {
+                let family = copy_string_attr(&desc, unsafe { kCTFontFamilyNameAttribute });
+                if family.is_empty() || family.starts_with('.') {
+                    return None;
+                }
+                let postscript = copy_string_attr(&desc, unsafe { kCTFontNameAttribute });
+                let mut style = copy_string_attr(&desc, unsafe { kCTFontStyleNameAttribute });
+                if style.is_empty() {
+                    style = "Regular".to_string();
+                }
+                Some(FaceInfo {
+                    family,
+                    style,
+                    postscript,
+                    weight: 400,
+                    stretch: 5,
+                    italic: false,
+                    variation_axes: Vec::new(),
+                    modified_at,
+                    user_installed,
+                })
+            })
+            .collect()
     }
 
     pub(super) fn enumerate() -> FontFiles {
@@ -184,7 +133,7 @@ mod macos {
             let user_installed = dirs::classify_user_installed(&path);
             let faces = match parser::read_font_file(&path, user_installed) {
                 Ok(f) if !f.is_empty() => f,
-                _ => unsafe { ct_fallback_faces(&path, user_installed) },
+                _ => ct_fallback_faces(&path, user_installed),
             };
             if !faces.is_empty() {
                 out.insert(path.to_string_lossy().into_owned(), faces);

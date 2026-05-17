@@ -6,7 +6,7 @@ on:
   pull_request:
 
 concurrency:
-  group: parity-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -21,6 +21,19 @@ env:
   OUR_TLS_PORT: "45001"
   # Upstream rejects requests without this Origin header.
   ORIGIN_HEADER: "Origin: https://www.figma.com"
+  # Shared jq filter for the response-comparison steps. Sorts fontFiles
+  # by path and faces by postscript/style to neutralise enumeration
+  # order, and deletes per-face modified_at (upstream's cache-insertion
+  # timestamp, not the file mtime, so impossible to match).
+  NORM: |
+    {
+      version, package, modified_at, modified_fonts, machine_id, launch_source,
+      fontFiles: (.fontFiles
+        | to_entries
+        | sort_by(.key)
+        | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
+        | from_entries)
+    }
 
 jobs:
   parity:
@@ -157,18 +170,6 @@ jobs:
         run: |
           ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"
           OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files"
-          # Sort fontFiles by path and faces within each path by postscript
-          # to neutralise enumeration order.
-          # `modified_at` per face is upstream's cache-insertion time (not the
-          # file's mtime); impossible to match without copying upstream's cache.
-          NORM='{
-            version, package, modified_at, modified_fonts, machine_id, launch_source,
-            fontFiles: (.fontFiles
-              | to_entries
-              | sort_by(.key)
-              | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
-              | from_entries)
-          }'
           curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-http.json
           curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-http.json
           diff -u /tmp/orig-http.json /tmp/ours-http.json
@@ -177,16 +178,6 @@ jobs:
         run: |
           ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/figma/font-files"
           OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}/figma/font-files"
-          # `modified_at` per face is upstream's cache-insertion time (not the
-          # file's mtime); impossible to match without copying upstream's cache.
-          NORM='{
-            version, package, modified_at, modified_fonts, machine_id, launch_source,
-            fontFiles: (.fontFiles
-              | to_entries
-              | sort_by(.key)
-              | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
-              | from_entries)
-          }'
           curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-https.json
           curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-https.json
           diff -u /tmp/orig-https.json /tmp/ours-https.json
@@ -221,7 +212,7 @@ jobs:
           done < /tmp/samples.txt
 
       - name: Teardown
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           [ -f /tmp/orig.pid ] && kill "$(cat /tmp/orig.pid)" 2>/dev/null || true
           [ -f /tmp/ours.pid ] && kill "$(cat /tmp/ours.pid)" 2>/dev/null || true

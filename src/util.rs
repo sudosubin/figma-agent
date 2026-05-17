@@ -49,7 +49,7 @@ pub fn machine_id() -> String {
     let mut hasher = Sha256::new();
     hasher.update(uuid.as_bytes());
     hasher.update(MACHINE_ID_SALT.as_bytes());
-    hex(&hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(target_os = "macos")]
@@ -86,12 +86,4 @@ fn platform_uuid() -> Option<String> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn platform_uuid() -> Option<String> {
     None
-}
-
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
 }
