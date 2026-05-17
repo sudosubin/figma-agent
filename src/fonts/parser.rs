@@ -21,6 +21,11 @@ pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<Fa
     for index in 0..face_count {
         let Ok(face) = ttf_parser::Face::parse(&bytes, index) else { continue };
         let base = make_info(&face, modified_at, user_installed);
+        // Drop hidden/system-internal faces; upstream excludes empty or
+        // dot-prefixed family names.
+        if base.family.is_empty() || base.family.starts_with('.') {
+            continue;
+        }
         let instances = parse_fvar_instances(&face, base.variation_axes.len());
         if instances.is_empty() {
             out.push(base);
@@ -69,13 +74,30 @@ fn pick_name(face: &ttf_parser::Face, name_id: u16) -> Option<String> {
             continue;
         }
         if n.platform_id == ttf_parser::PlatformId::Windows && n.language_id == 0x0409 {
-            return n.to_string();
+            if let Some(s) = decode_name(&n) {
+                return Some(s);
+            }
         }
         if fallback.is_none() {
             fallback = Some(n);
         }
     }
-    fallback.and_then(|n| n.to_string())
+    fallback.and_then(|n| decode_name(&n))
+}
+
+/// ttf-parser's `Name::to_string` only handles UTF-16BE-encoded entries;
+/// Apple system fonts often only carry MacRoman-encoded names (the legacy
+/// Macintosh platform entries). Fall back to lossy UTF-8 on the raw bytes
+/// so ASCII-named families like "Apple Color Emoji" survive.
+fn decode_name(n: &ttf_parser::name::Name) -> Option<String> {
+    if let Some(s) = n.to_string() {
+        return Some(s);
+    }
+    if n.name.iter().all(|&b| b.is_ascii() && b != 0) {
+        std::str::from_utf8(n.name).ok().map(|s| s.to_string())
+    } else {
+        None
+    }
 }
 
 fn extract_axes(face: &ttf_parser::Face) -> Vec<AxisInfo> {
