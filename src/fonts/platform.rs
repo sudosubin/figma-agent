@@ -47,20 +47,15 @@ mod macos {
         let mut seen = HashSet::new();
         for url in urls.iter() {
             let Some(p) = url.to_path() else { continue };
-            let trimmed = strip_rsrc_suffix(p);
-            if seen.insert(trimmed.clone()) {
-                paths.push(trimmed);
+            let p = match p.to_string_lossy().strip_suffix(RSRC_SUFFIX) {
+                Some(stripped) => PathBuf::from(stripped),
+                None => p,
+            };
+            if seen.insert(p.clone()) {
+                paths.push(p);
             }
         }
         paths
-    }
-
-    fn strip_rsrc_suffix(p: PathBuf) -> PathBuf {
-        let s = p.to_string_lossy();
-        match s.strip_suffix(RSRC_SUFFIX) {
-            Some(stripped) => PathBuf::from(stripped),
-            None => p,
-        }
     }
 
     /// Read a CFString-valued descriptor attribute. Returns the empty
