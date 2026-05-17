@@ -47,6 +47,7 @@ mod macos {
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         fn CTFontManagerCopyAvailableFontURLs() -> CFArrayRef;
+        fn CTFontManagerCopyAvailableFontFamilyNames() -> CFArrayRef;
         fn CTFontManagerCreateFontDescriptorsFromURL(url: CFURLRef) -> CFArrayRef;
         fn CTFontDescriptorCopyAttribute(
             descriptor: CTFontDescriptorRef,
@@ -325,11 +326,29 @@ mod macos {
         })
     }
 
+    unsafe fn copy_visible_family_set() -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        let arr = CTFontManagerCopyAvailableFontFamilyNames();
+        if arr.is_null() {
+            return set;
+        }
+        let n = CFArrayGetCount(arr);
+        for i in 0..n {
+            let s = CFArrayGetValueAtIndex(arr, i) as CFStringRef;
+            if let Some(name) = cfstr_to_string(s) {
+                set.insert(name);
+            }
+        }
+        CFRelease(arr);
+        set
+    }
+
     pub(super) fn enumerate() -> FontFiles {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let is_user_path = |p: &Path| -> bool {
             home.as_ref().is_some_and(|h| p.starts_with(h))
         };
+        let visible_families = unsafe { copy_visible_family_set() };
         let mut out = FontFiles::new();
         unsafe {
             let urls = CTFontManagerCopyAvailableFontURLs();
@@ -359,6 +378,13 @@ mod macos {
                         continue;
                     }
                     if let Some(face) = build_face(desc, modified_at, user_installed) {
+                        // Upstream only enumerates families visible in
+                        // `CTFontManagerCopyAvailableFontFamilyNames`; this
+                        // is how Athelas / Iowan / STIX stay out of the
+                        // catalogue despite being on disk.
+                        if !visible_families.contains(&face.family) {
+                            continue;
+                        }
                         // CT lists each face as its own URL, so the same
                         // descriptor may surface multiple times across the
                         // outer loop; dedup by postscript.
