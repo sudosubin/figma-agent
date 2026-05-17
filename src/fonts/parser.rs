@@ -124,57 +124,83 @@ fn extract_axes(face: &ttf_parser::Face) -> Vec<AxisInfo> {
         .collect()
 }
 
-/// Upstream resolves axis names with three rules:
-///   1. OT-registered axes always surface their canonical English name,
-///      so font-local translations (e.g. "字寬" for `wdth`) don't leak.
-///   2. Otherwise prefer the Macintosh entry, but ONLY when ttf-parser
-///      can decode it (i.e. UTF-16BE). Apple-shipped variable fonts
-///      often carry a MacRoman/ASCII Mac entry that ttf-parser can't
-///      decode (Recursive's `MONO` has Mac=ASCII "Monospace" alongside
-///      Win=UTF-16BE "Monospace"); upstream surfaces the tag itself in
-///      that case. The custom `decode_name` ASCII fallback used for
-///      family names would defeat this rule, so we don't reach for it.
-///   3. If no Mac entry is present at all (PingFangUI's `WDTH`/`HGHT`),
-///      fall through to the Windows long name.
+/// Upstream's axis-name rule depends on whether the tag is OT-registered:
+///   - Registered tags (wght / wdth / slnt / ital / opsz) take the
+///     human-readable label and PascalCase it: capitalise the first
+///     letter of each space-separated word and drop the spaces. The
+///     label comes from Win/en-US UTF-16BE if present (Inter's
+///     "Optical size" → "OpticalSize"), otherwise Mac/en ASCII (Skia
+///     stores only Mac names → "Weight").
+///   - Custom tags prefer the Macintosh entry but only when ttf-parser
+///     can decode it (i.e. UTF-16BE). Apple-shipped variable fonts often
+///     carry a MacRoman/ASCII Mac entry that ttf-parser can't decode
+///     (Recursive's `MONO` has Mac=ASCII "Monospace" alongside Win=UTF-16BE
+///     "Monospace"); upstream surfaces the tag itself in that case. The
+///     `decode_name` ASCII fallback used for family names would defeat
+///     this rule, so we don't reach for it here.
+///   - If no Mac entry is present at all (PingFangUI's `WDTH`/`HGHT`),
+///     fall through to the Windows long name.
 fn pick_axis_name(face: &ttf_parser::Face, tag: &str, name_id: u16) -> String {
-    if let Some(canonical) = registered_axis_name(tag) {
-        return canonical.to_string();
-    }
     let names = face.names();
     let mut has_mac = false;
-    let mut mac_decoded: Option<String> = None;
-    let mut win_decoded: Option<String> = None;
+    let mut mac_utf16: Option<String> = None;
+    let mut mac_ascii: Option<String> = None;
+    let mut win_utf16: Option<String> = None;
     for j in 0..names.len() {
         let Some(n) = names.get(j) else { continue };
         if n.name_id != name_id {
             continue;
         }
-        if n.platform_id == ttf_parser::PlatformId::Macintosh && !has_mac {
-            has_mac = true;
-            mac_decoded = n.to_string();
+        if n.platform_id == ttf_parser::PlatformId::Macintosh {
+            if !has_mac {
+                has_mac = true;
+                mac_utf16 = n.to_string();
+            }
+            if n.language_id == 0 && mac_ascii.is_none() {
+                mac_ascii = decode_ascii(&n);
+            }
         } else if n.platform_id == ttf_parser::PlatformId::Windows
             && n.language_id == 0x0409
-            && win_decoded.is_none()
+            && win_utf16.is_none()
         {
-            win_decoded = n.to_string();
+            win_utf16 = n.to_string();
         }
     }
+    if is_registered_axis(tag) {
+        return win_utf16
+            .or(mac_ascii)
+            .map(|s| pascal_case(&s))
+            .unwrap_or_else(|| tag.to_string());
+    }
     if has_mac {
-        mac_decoded.filter(|s| !s.is_empty()).unwrap_or_else(|| tag.to_string())
+        mac_utf16.filter(|s| !s.is_empty()).unwrap_or_else(|| tag.to_string())
     } else {
-        win_decoded.unwrap_or_else(|| tag.to_string())
+        win_utf16.unwrap_or_else(|| tag.to_string())
     }
 }
 
-fn registered_axis_name(tag: &str) -> Option<&'static str> {
-    match tag {
-        "wght" => Some("Weight"),
-        "wdth" => Some("Width"),
-        "slnt" => Some("Slant"),
-        "ital" => Some("Italic"),
-        "opsz" => Some("Optical Size"),
-        _ => None,
+fn decode_ascii(n: &ttf_parser::name::Name) -> Option<String> {
+    if n.name.iter().all(|&b| b.is_ascii() && b != 0) {
+        std::str::from_utf8(n.name).ok().map(|s| s.to_string())
+    } else {
+        None
     }
+}
+
+fn is_registered_axis(tag: &str) -> bool {
+    matches!(tag, "wght" | "wdth" | "slnt" | "ital" | "opsz")
+}
+
+fn pascal_case(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for word in input.split(' ') {
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
 }
 
 /// Match upstream's Galvji-Oblique → "Italic" rewrite. The trigger is an
