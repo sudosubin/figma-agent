@@ -38,6 +38,7 @@ pub async fn serve(config: Config) -> Result<()> {
 
     let router = Router::new()
         .route("/font-files", get(routes::font_files))
+        .route("/font-file", get(routes::font_file))
         .with_state(state.clone())
         .layer(CompressionLayer::new())
         .layer(server_header)
