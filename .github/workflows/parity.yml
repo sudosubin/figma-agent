@@ -193,18 +193,18 @@ jobs:
           ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-file"
           OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-file"
           # Sample 8 fonts shared by both responses, under the upstream 32 MB cap.
-          mapfile -t SAMPLES < <(
-            jq -r '.fontFiles | keys[]' /tmp/orig-http.json \
-              | while read -r p; do
-                  [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
-                done \
-              | head -8
-          )
-          if [ "${#SAMPLES[@]}" -eq 0 ]; then
+          # macOS ships bash 3 (no `mapfile`), so write the list to a file
+          # and iterate.
+          jq -r '.fontFiles | keys[]' /tmp/orig-http.json \
+            | while read -r p; do
+                [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
+              done \
+            | head -8 > /tmp/samples.txt
+          if [ ! -s /tmp/samples.txt ]; then
             echo "::error::no sampleable fonts found"
             exit 1
           fi
-          for p in "${SAMPLES[@]}"; do
+          while IFS= read -r p; do
             ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
             SHA_ORIG=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG?file=$ENC" | shasum -a 256 | awk '{print $1}')
             SHA_OURS=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS?file=$ENC" | shasum -a 256 | awk '{print $1}')
@@ -215,7 +215,7 @@ jobs:
               exit 1
             fi
             echo "ok $SHA_ORIG  $p"
-          done
+          done < /tmp/samples.txt
 
       - name: Teardown
         if: always()
