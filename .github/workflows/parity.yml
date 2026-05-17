@@ -59,21 +59,22 @@ jobs:
           curl -fL -o /tmp/Figma.dmg \
             "https://desktop.figma.com/${{ matrix.arch_slug }}/Figma-${{ env.FIGMA_VERSION }}.dmg"
 
-      - name: Extract upstream figma_agent
+      - name: Install upstream agent to canonical location
+        # When launched from inside Figma.app the binary self-installs to
+        # ~/Library/Application Support/Figma/FigmaAgent.app and hands off to
+        # launchd. In CI there is no launchd registration, so we pre-place
+        # the bundle at the canonical install path; the binary then skips
+        # install and runs as a daemon directly.
         run: |
           hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
-          cp -R /Volumes/Figma/Figma.app /tmp/Figma.app
+          DEST_DIR="$HOME/Library/Application Support/Figma"
+          mkdir -p "$DEST_DIR"
+          cp -R /Volumes/Figma/Figma.app/Contents/Library/FigmaAgent.app "$DEST_DIR/"
           hdiutil detach /Volumes/Figma
-          # Strip quarantine so Gatekeeper does not block headless launch.
-          xattr -dr com.apple.quarantine /tmp/Figma.app || true
-          AGENT=$(find /tmp/Figma.app -name 'figma_agent' -type f -perm +111 | head -1)
-          if [ -z "$AGENT" ]; then
-            echo "::error::could not locate figma_agent inside Figma.app"
-            find /tmp/Figma.app -name 'figma_agent' || true
-            exit 1
-          fi
-          echo "ORIG_AGENT=$AGENT" >> $GITHUB_ENV
+          xattr -dr com.apple.quarantine "$DEST_DIR/FigmaAgent.app" || true
+          AGENT="$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent"
           ls -lh "$AGENT"
+          echo "ORIG_AGENT=$AGENT" >> $GITHUB_ENV
 
       - name: Build our agent
         run: cargo build --release
