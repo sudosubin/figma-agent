@@ -1,0 +1,199 @@
+name: Parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FIGMA_VERSION: "126.3.12"
+  ORIG_HTTP_PORT: "44950"
+  ORIG_TLS_PORT: "44951"
+  OUR_HTTP_PORT: "44960"
+  OUR_TLS_PORT: "44961"
+
+jobs:
+  parity:
+    name: parity (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            arch_slug: mac-arm
+          - runner: macos-13
+            arch_slug: mac
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install test fonts
+        run: |
+          brew install --cask \
+            font-inter \
+            font-recursive \
+            font-fira-code \
+            font-source-han-sans-jp
+
+      - name: Cache Figma DMG
+        id: dmg-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/Figma.dmg
+          key: figma-${{ matrix.arch_slug }}-${{ env.FIGMA_VERSION }}
+
+      - name: Download Figma DMG
+        if: steps.dmg-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o /tmp/Figma.dmg \
+            "https://desktop.figma.com/${{ matrix.arch_slug }}/Figma-${{ env.FIGMA_VERSION }}.dmg"
+
+      - name: Extract upstream figma_agent
+        run: |
+          hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
+          cp -R /Volumes/Figma/Figma.app /tmp/Figma.app
+          hdiutil detach /Volumes/Figma
+          # Strip quarantine so Gatekeeper does not block headless launch.
+          xattr -dr com.apple.quarantine /tmp/Figma.app || true
+          AGENT=$(find /tmp/Figma.app -name 'figma_agent' -type f -perm +111 | head -1)
+          if [ -z "$AGENT" ]; then
+            echo "::error::could not locate figma_agent inside Figma.app"
+            find /tmp/Figma.app -name 'figma_agent' || true
+            exit 1
+          fi
+          echo "ORIG_AGENT=$AGENT" >> $GITHUB_ENV
+          ls -lh "$AGENT"
+
+      - name: Build our agent
+        run: cargo build --release
+
+      - name: Configure our agent ports
+        run: |
+          mkdir -p "$HOME/.config/figma-agent"
+          cat > "$HOME/.config/figma-agent/config.json" <<EOF
+          {
+            "host": "127.0.0.1",
+            "port": ${{ env.OUR_HTTP_PORT }},
+            "tls_port": ${{ env.OUR_TLS_PORT }}
+          }
+          EOF
+          cat "$HOME/.config/figma-agent/config.json"
+
+      - name: Start upstream agent
+        run: |
+          "$ORIG_AGENT" > /tmp/orig.log 2>&1 &
+          echo $! > /tmp/orig.pid
+          for i in $(seq 1 30); do
+            if curl -fs "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" > /dev/null 2>&1; then
+              echo "upstream up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fs "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/font-files" > /dev/null || {
+            echo "::error::upstream agent did not become reachable"
+            cat /tmp/orig.log
+            exit 1
+          }
+
+      - name: Start our agent
+        run: |
+          ./target/release/figma-agent > /tmp/ours.log 2>&1 &
+          echo $! > /tmp/ours.pid
+          for i in $(seq 1 30); do
+            if curl -fs "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null 2>&1; then
+              echo "ours up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -fs "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/font-files" > /dev/null || {
+            echo "::error::our agent did not become reachable"
+            cat /tmp/ours.log
+            exit 1
+          }
+
+      - name: Compare /font-files (HTTP)
+        run: |
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}"
+          # Mask volatile top-level fields. Strip our extra `path` per font.
+          # Sort fonts by (postscript, family, style) for deterministic order.
+          NORM='{
+            modified_fonts: .modified_fonts,
+            fonts: (.fonts | sort_by(.postscript, .family, .style))
+          }'
+          NORM_OURS='{
+            modified_fonts: .modified_fonts,
+            fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
+          }'
+          curl -fs "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-files.json
+          curl -fs "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-files.json
+          diff -u /tmp/orig-files.json /tmp/ours-files.json
+
+      - name: Compare /font-files (HTTPS)
+        run: |
+          ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}"
+          OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}"
+          NORM='{
+            modified_fonts: .modified_fonts,
+            fonts: (.fonts | sort_by(.postscript, .family, .style))
+          }'
+          NORM_OURS='{
+            modified_fonts: .modified_fonts,
+            fonts: (.fonts | map(del(.path)) | sort_by(.postscript, .family, .style))
+          }'
+          curl -fsk "$ORIG/font-files" | jq "$NORM"      > /tmp/orig-tls.json
+          curl -fsk "$OURS/font-files" | jq "$NORM_OURS" > /tmp/ours-tls.json
+          diff -u /tmp/orig-tls.json /tmp/ours-tls.json
+
+      - name: Compare sampled /font-file binaries
+        run: |
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}"
+          # Sample 8 fonts under the upstream 32 MB ceiling.
+          # Path comes from our response since upstream omits the field.
+          mapfile -t SAMPLES < <(curl -fs "$OURS/font-files" \
+            | jq -r '.fonts | sort_by(.postscript) | .[].path' \
+            | awk '!seen[$0]++' \
+            | while read -r p; do
+                [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
+              done \
+            | head -8)
+          if [ "${#SAMPLES[@]}" -eq 0 ]; then
+            echo "::error::no sampleable fonts found"
+            exit 1
+          fi
+          for p in "${SAMPLES[@]}"; do
+            ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
+            SHA_ORIG=$(curl -fs "$ORIG/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_OURS=$(curl -fs "$OURS/font-file?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            if [ "$SHA_ORIG" != "$SHA_OURS" ]; then
+              echo "::error::binary diff: $p"
+              echo "  upstream: $SHA_ORIG"
+              echo "  ours:     $SHA_OURS"
+              exit 1
+            fi
+            echo "ok $SHA_ORIG  $p"
+          done
+
+      - name: Teardown
+        if: always()
+        run: |
+          [ -f /tmp/orig.pid ] && kill "$(cat /tmp/orig.pid)" 2>/dev/null || true
+          [ -f /tmp/ours.pid ] && kill "$(cat /tmp/ours.pid)" 2>/dev/null || true
+          echo "=== upstream log (tail) ==="
+          tail -40 /tmp/orig.log 2>/dev/null || true
+          echo "=== ours log (tail) ==="
+          tail -40 /tmp/ours.log 2>/dev/null || true
