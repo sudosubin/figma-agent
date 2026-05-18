@@ -1,6 +1,16 @@
+<div align="center">
+
 # figma-agent
 
+[![license](https://badgen.net/github/license/sudosubin/figma-agent)](LICENSE)
+[![release](https://badgen.net/github/release/sudosubin/figma-agent)](https://github.com/sudosubin/figma-agent/releases)
+[![crates.io](https://badgen.net/crates/v/figma-agent)](https://crates.io/crates/figma-agent)
+[![parity](https://github.com/sudosubin/figma-agent/actions/workflows/parity.yml/badge.svg)](https://github.com/sudosubin/figma-agent/actions/workflows/parity.yml)
+[![built with rust](https://badgen.net/badge/built%20with/Rust/orange)](https://www.rust-lang.org)
+
 Local font helper for [Figma](https://www.figma.com), Linux and macOS.
+
+</div>
 
 A small Rust daemon that exposes the two endpoints the Figma web client
 calls to enumerate and load locally-installed fonts.
