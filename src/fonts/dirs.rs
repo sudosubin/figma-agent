@@ -1,33 +1,9 @@
 use std::path::{Path, PathBuf};
 
 pub fn default_font_dirs() -> Vec<(PathBuf, bool)> {
-    let mut out: Vec<(PathBuf, bool)> = Vec::new();
-
-    #[cfg(target_os = "linux")]
-    {
-        out.push((PathBuf::from("/usr/share/fonts"), false));
-        out.push((PathBuf::from("/usr/local/share/fonts"), false));
-        if let Some(home) = home_dir() {
-            out.push((home.join(".fonts"), true));
-            out.push((home.join(".local/share/fonts"), true));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        out.push((PathBuf::from("/System/Library/Fonts"), false));
-        out.push((PathBuf::from("/System/Library/Fonts/Supplemental"), false));
-        out.push((PathBuf::from("/Library/Fonts"), false));
-        if let Some(home) = home_dir() {
-            out.push((home.join("Library/Fonts"), true));
-            out.push((home.join("Library/Application Support/Fonts"), true));
-            // Font Book parks disabled faces here; some apps still surface them.
-            out.push((home.join("Library/Fonts Disabled"), true));
-        }
-    }
-
-    out.retain(|(p, _)| p.exists());
-    out
+    // The system registry (CoreText / fc-list) is authoritative; we only
+    // walk extra `font_dirs` entries when the user opts in via config.
+    Vec::new()
 }
 
 pub(super) fn classify_user_installed(path: &Path) -> bool {

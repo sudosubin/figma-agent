@@ -1,0 +1,222 @@
+name: Parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FIGMA_VERSION: "126.3.12"
+  # Upstream Figma agent 126.3.12 binds 44950 (HTTP) and 44960 (HTTPS).
+  ORIG_HTTP_PORT: "44950"
+  ORIG_TLS_PORT: "44960"
+  OUR_HTTP_PORT: "45000"
+  OUR_TLS_PORT: "45001"
+  # Upstream rejects requests without this Origin header.
+  ORIGIN_HEADER: "Origin: https://www.figma.com"
+  # Shared jq filter for the response-comparison steps. Sorts fontFiles
+  # by path and faces by postscript/style to neutralise enumeration
+  # order, and deletes per-face modified_at (upstream's cache-insertion
+  # timestamp, not the file mtime, so impossible to match).
+  NORM: |
+    {
+      version, package, modified_at, modified_fonts, machine_id, launch_source,
+      fontFiles: (.fontFiles
+        | to_entries
+        | sort_by(.key)
+        | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
+        | from_entries)
+    }
+
+jobs:
+  parity:
+    name: parity (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ARM (Apple Silicon).
+          - runner: macos-latest
+            arch_slug: mac-arm
+          # Intel. `macos-13` was sunset on 2025-12-08; the only currently
+          # supported Intel-capable hosted label is `macos-15-intel`.
+          - runner: macos-15-intel
+            arch_slug: mac
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install test fonts
+        run: |
+          brew install --cask \
+            font-inter \
+            font-recursive \
+            font-fira-code \
+            font-source-han-sans-vf
+
+      - name: Cache Figma DMG
+        id: dmg-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/Figma.dmg
+          key: figma-${{ matrix.arch_slug }}-${{ env.FIGMA_VERSION }}
+
+      - name: Download Figma DMG
+        if: steps.dmg-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o /tmp/Figma.dmg \
+            "https://desktop.figma.com/${{ matrix.arch_slug }}/Figma-${{ env.FIGMA_VERSION }}.dmg"
+
+      - name: Install upstream agent to canonical location
+        # When launched from inside Figma.app the binary self-installs to
+        # ~/Library/Application Support/Figma/FigmaAgent.app and hands off to
+        # launchd. In CI there is no launchd registration, so we pre-place
+        # the bundle at the canonical install path; the binary then skips
+        # install and runs as a daemon directly.
+        run: |
+          hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
+          DEST_DIR="$HOME/Library/Application Support/Figma"
+          mkdir -p "$DEST_DIR"
+          cp -R /Volumes/Figma/Figma.app/Contents/Library/FigmaAgent.app "$DEST_DIR/"
+          hdiutil detach /Volumes/Figma
+          xattr -dr com.apple.quarantine "$DEST_DIR/FigmaAgent.app" || true
+          AGENT="$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent"
+          ls -lh "$AGENT"
+          echo "ORIG_AGENT=$AGENT" >> $GITHUB_ENV
+
+      - name: Build our agent
+        run: cargo build --release
+
+      - name: Configure our agent ports
+        run: |
+          mkdir -p "$HOME/.config/figma-agent"
+          cat > "$HOME/.config/figma-agent/config.json" <<EOF
+          {
+            "host": "127.0.0.1",
+            "port": ${{ env.OUR_HTTP_PORT }},
+            "tls_port": ${{ env.OUR_TLS_PORT }}
+          }
+          EOF
+          cat "$HOME/.config/figma-agent/config.json"
+
+      - name: Start upstream agent and warm
+        # The first /font-files call drives enumeration of every system
+        # font; on CI this can take well over a minute. Wait for the port
+        # to open quickly, then send one blocking warm-up request so later
+        # comparison steps hit the cache.
+        run: |
+          "$ORIG_AGENT" > /tmp/orig.log 2>&1 &
+          echo $! > /tmp/orig.pid
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 ${{ env.ORIG_HTTP_PORT }} 2>/dev/null; then
+              echo "upstream port open after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 ${{ env.ORIG_HTTP_PORT }} || {
+            echo "::error::upstream did not bind ${{ env.ORIG_HTTP_PORT }}"
+            cat /tmp/orig.log
+            exit 1
+          }
+          echo "warming upstream..."
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 60 \
+              -H "${{ env.ORIGIN_HEADER }}" \
+              "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files" 2>/dev/null || echo 000)
+            echo "  attempt $i: HTTP $CODE"
+            [ "${CODE:0:1}" = "2" ] && break
+            sleep 5
+          done
+          if [ "${CODE:0:1}" != "2" ]; then
+            echo "::error::upstream never returned 2xx"
+            cat /tmp/orig.log
+            exit 1
+          fi
+
+      - name: Start our agent and warm
+        run: |
+          ./target/release/figma-agent > /tmp/ours.log 2>&1 &
+          echo $! > /tmp/ours.pid
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 ${{ env.OUR_HTTP_PORT }} 2>/dev/null; then
+              echo "ours port open after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          nc -z 127.0.0.1 ${{ env.OUR_HTTP_PORT }} || {
+            echo "::error::ours did not bind ${{ env.OUR_HTTP_PORT }}"
+            cat /tmp/ours.log
+            exit 1
+          }
+          curl -fs --max-time 240 --retry 30 --retry-all-errors --retry-delay 2 \
+            -H "${{ env.ORIGIN_HEADER }}" \
+            "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files" > /dev/null
+          echo "ours warmed"
+
+      - name: Compare /figma/font-files (HTTP)
+        run: |
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files"
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-http.json
+          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-http.json
+          diff -u /tmp/orig-http.json /tmp/ours-http.json
+
+      - name: Compare /figma/font-files (HTTPS)
+        run: |
+          ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/figma/font-files"
+          OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}/figma/font-files"
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-https.json
+          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-https.json
+          diff -u /tmp/orig-https.json /tmp/ours-https.json
+
+      - name: Compare sampled /figma/font-file binaries
+        run: |
+          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-file"
+          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-file"
+          # Sample 8 fonts shared by both responses, under the upstream 32 MB cap.
+          # macOS ships bash 3 (no `mapfile`), so write the list to a file
+          # and iterate.
+          jq -r '.fontFiles | keys[]' /tmp/orig-http.json \
+            | while read -r p; do
+                [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
+              done \
+            | head -8 > /tmp/samples.txt
+          if [ ! -s /tmp/samples.txt ]; then
+            echo "::error::no sampleable fonts found"
+            exit 1
+          fi
+          while IFS= read -r p; do
+            ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
+            SHA_ORIG=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            SHA_OURS=$(curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS?file=$ENC" | shasum -a 256 | awk '{print $1}')
+            if [ "$SHA_ORIG" != "$SHA_OURS" ]; then
+              echo "::error::binary diff: $p"
+              echo "  upstream: $SHA_ORIG"
+              echo "  ours:     $SHA_OURS"
+              exit 1
+            fi
+            echo "ok $SHA_ORIG  $p"
+          done < /tmp/samples.txt
+
+      - name: Teardown
+        if: ${{ !cancelled() }}
+        run: |
+          [ -f /tmp/orig.pid ] && kill "$(cat /tmp/orig.pid)" 2>/dev/null || true
+          [ -f /tmp/ours.pid ] && kill "$(cat /tmp/ours.pid)" 2>/dev/null || true
+          echo "=== upstream log (tail) ==="
+          tail -40 /tmp/orig.log 2>/dev/null || true
+          echo "=== ours log (tail) ==="
+          tail -40 /tmp/ours.log 2>/dev/null || true

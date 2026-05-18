@@ -1,7 +1,7 @@
-//! Same JSON shape as orig macOS's `font_cache.json` plus the `path` field
-//! we add on each `FontInfo`.
+//! Disk-side persistence. The on-disk shape is our own (keyed by daemon
+//! version) and is independent from the wire response.
 
-use super::FontInfo;
+use super::FontFiles;
 use crate::util::{cache_dir, now_secs, VERSION};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -10,9 +10,7 @@ use std::path::PathBuf;
 pub(super) struct DiskCache {
     version: String,
     fonts_cached_at: u64,
-    modified_at: u64,
-    modified_fonts: Vec<String>,
-    pub(super) fonts: Vec<FontInfo>,
+    pub(super) fonts: FontFiles,
 }
 
 fn cache_path() -> Option<PathBuf> {
@@ -34,7 +32,7 @@ pub(super) fn load() -> Option<DiskCache> {
     Some(cache)
 }
 
-pub(super) fn save(fonts: &[FontInfo]) {
+pub(super) fn save(fonts: &FontFiles) {
     let Some(path) = cache_path() else { return };
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -42,13 +40,10 @@ pub(super) fn save(fonts: &[FontInfo]) {
             return;
         }
     }
-    let now = now_secs();
     let cache = DiskCache {
         version: VERSION.to_string(),
-        fonts_cached_at: now,
-        modified_at: now,
-        modified_fonts: Vec::new(),
-        fonts: fonts.to_vec(),
+        fonts_cached_at: now_secs(),
+        fonts: fonts.clone(),
     };
     let data = match serde_json::to_vec(&cache) {
         Ok(d) => d,

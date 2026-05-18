@@ -1,23 +1,27 @@
-//! PNA: Chrome 94+ blocks public-origin to 127.0.0.1 preflight without
-//! `Access-Control-Allow-Private-Network: true`.
+//! Origin-restricted CORS matching upstream Figma agent 126.x exactly:
+//! requests without `Origin: https://www.figma.com` get 403, OPTIONS
+//! preflight gets 204 with the upstream-shaped header set, and the
+//! `Access-Control-Allow-Private-Network: true` header is required so
+//! Chrome 94+ lets figma.com reach 127.0.0.1.
 
 use crate::config::Config;
 use crate::routes;
 use anyhow::Result;
 use axum::{
-    http::{header, HeaderName, HeaderValue, Method},
+    body::Body,
+    extract::Request,
+    http::{HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
     ServiceExt,
 };
 use std::sync::Arc;
 use tower::Layer;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::{Any, CorsLayer},
-    normalize_path::NormalizePathLayer,
-    set_header::SetResponseHeaderLayer,
-};
+use tower_http::normalize_path::NormalizePathLayer;
+
+const ALLOWED_ORIGIN: &str = "https://www.figma.com";
 
 pub async fn serve(config: Config) -> Result<()> {
     let http_addr = format!("{}:{}", config.host, config.port);
@@ -25,24 +29,11 @@ pub async fn serve(config: Config) -> Result<()> {
     let tls_addr = config.tls_port.map(|p| format!("{}:{}", config.host, p));
     let state = Arc::new(config);
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([HeaderName::from_static("content-type")])
-        .allow_private_network(true);
-
-    let server_header = SetResponseHeaderLayer::overriding(
-        header::SERVER,
-        HeaderValue::from_static(concat!("FigmaAgent/", env!("CARGO_PKG_VERSION"))),
-    );
-
     let router = Router::new()
-        .route("/font-files", get(routes::font_files))
-        .route("/font-file", get(routes::font_file))
+        .route("/figma/font-files", get(routes::font_files))
+        .route("/figma/font-file", get(routes::font_file))
         .with_state(state.clone())
-        .layer(CompressionLayer::new())
-        .layer(server_header)
-        .layer(cors);
+        .layer(middleware::from_fn(cors_middleware));
 
     // Must wrap Router from outside, rewrites path before route matching.
     let app = NormalizePathLayer::trim_trailing_slash().layer(router);
@@ -67,6 +58,37 @@ pub async fn serve(config: Config) -> Result<()> {
         t.await??;
     }
     Ok(())
+}
+
+async fn cors_middleware(req: Request, next: Next) -> Response {
+    let origin = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if origin != ALLOWED_ORIGIN {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let is_options = req.method() == Method::OPTIONS;
+    let mut resp = if is_options {
+        let mut r = Response::new(Body::empty());
+        *r.status_mut() = StatusCode::NO_CONTENT;
+        r
+    } else {
+        next.run(req).await
+    };
+    let h = resp.headers_mut();
+    // axum's auto-OPTIONS handler can sneak an `allow` in; strip for parity.
+    h.remove("allow");
+    h.insert("access-control-allow-origin", HeaderValue::from_static(ALLOWED_ORIGIN));
+    h.insert("vary", HeaderValue::from_static("Origin"));
+    if is_options {
+        h.insert("access-control-allow-headers", HeaderValue::from_static("Content-Type, Accept"));
+        h.insert("access-control-max-age", HeaderValue::from_static("600"));
+        h.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
+        h.insert("access-control-allow-methods", HeaderValue::from_static("POST, GET, OPTIONS"));
+    }
+    resp
 }
 
 #[cfg(feature = "tls")]
