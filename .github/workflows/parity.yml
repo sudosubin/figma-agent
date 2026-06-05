@@ -51,7 +51,7 @@ jobs:
             arch_slug: mac
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -67,7 +67,7 @@ jobs:
 
       - name: Cache Figma DMG
         id: dmg-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /tmp/Figma.dmg
           key: figma-${{ matrix.arch_slug }}-${{ env.FIGMA_VERSION }}

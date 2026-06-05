@@ -1,4 +1,4 @@
-name: Check upstream version
+name: Update
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: check-upstream-version
+  group: update
   cancel-in-progress: false
 
 permissions:
@@ -14,10 +14,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  check:
+  update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 
@@ -63,7 +63,7 @@ jobs:
       - name: Mint app token
         if: steps.ver.outputs.changed == 'true'
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
