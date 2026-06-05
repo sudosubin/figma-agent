@@ -1,0 +1,91 @@
+name: Check upstream version
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: check-upstream-version
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve current and latest version
+        id: ver
+        run: |
+          current=$(grep -oP 'UPSTREAM_PACKAGE: &str = "\K[^"]+' src/util.rs)
+          latest=$(curl -fsSL https://desktop.figma.com/agent/mac/RELEASE.json | jq -r '.version')
+
+          if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+            echo "::error::could not read .version from RELEASE.json"
+            exit 1
+          fi
+          if ! printf '%s' "$latest" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::unexpected version format: $latest"
+            exit 1
+          fi
+
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [ "$current" = "$latest" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "up to date: $current"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "update available: $current -> $latest"
+          fi
+
+      - name: Apply version bump
+        if: steps.ver.outputs.changed == 'true'
+        env:
+          CURRENT: ${{ steps.ver.outputs.current }}
+          LATEST: ${{ steps.ver.outputs.latest }}
+        run: |
+          escaped=$(printf '%s' "$CURRENT" | sed 's/\./\\./g')
+          sed -i "s/${escaped}/${LATEST}/g" src/util.rs .github/workflows/parity.yml
+
+      # A GitHub App token is used instead of GITHUB_TOKEN for two reasons:
+      # it carries the `workflows` permission (parity.yml lives under
+      # .github/workflows, which GITHUB_TOKEN may not modify), and PRs it
+      # opens DO trigger downstream workflows like `on: pull_request`
+      # (events from GITHUB_TOKEN are suppressed to prevent recursion).
+      - name: Mint app token
+        if: steps.ver.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Create pull request
+        if: steps.ver.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: chore/upstream-${{ steps.ver.outputs.latest }}
+          commit-message: "chore: bump upstream Figma agent to ${{ steps.ver.outputs.latest }}"
+          title: "chore: upstream Figma agent ${{ steps.ver.outputs.latest }} available"
+          labels: upstream
+          body: |
+            A new upstream Figma desktop agent version is available.
+
+            - Current: `${{ steps.ver.outputs.current }}`
+            - Latest: `${{ steps.ver.outputs.latest }}`
+            - Source: https://desktop.figma.com/agent/mac/RELEASE.json
+
+            This PR mechanically bumps the version string in `src/util.rs` and
+            `.github/workflows/parity.yml`. **Byte-for-byte parity is not guaranteed**:
+            the new upstream binary (`FigmaAgent-${{ steps.ver.outputs.latest }}.zip`)
+            likely contains real code changes, so the Parity workflow on this PR is
+            expected to fail until the agent is re-aligned by hand.
