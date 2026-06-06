@@ -120,12 +120,15 @@ def sha256_of(content):
 def stable_upstream_hash(opener, args, path):
     """Poll upstream until its hash is stable, or give up.
 
-    Returns (hash, attempts_used) on success, or (None, attempts_used) if the
-    response never stabilised to `stable_streak` consecutive identical,
-    non-empty hashes within `max_poll_attempts`.
+    Returns (hash, attempts_used) once `stable_streak` consecutive identical,
+    non-empty responses are seen. On exhaustion it prints a diagnostic of what
+    upstream actually returned (how many empties, how many distinct hashes) and
+    returns (None, attempts_used).
     """
     previous = None
     streak = 0
+    empty = 0
+    seen = set()
     for attempt in range(1, args.max_poll_attempts + 1):
         current = sha256_of(
             fetch(
@@ -137,6 +140,10 @@ def stable_upstream_hash(opener, args, path):
                 file_param=path,
             )
         )
+        if current is None:
+            empty += 1
+        else:
+            seen.add(current)
         if current is not None and current == previous:
             streak += 1
         else:
@@ -145,6 +152,11 @@ def stable_upstream_hash(opener, args, path):
         if current is not None and streak >= args.stable_streak:
             return current, attempt
         time.sleep(args.poll_interval_seconds)
+    print(
+        f"::error::upstream never stabilized ({args.stable_streak}x identical "
+        f"non-empty) for: {path} [{args.max_poll_attempts} attempts: "
+        f"{empty} empty, {len(seen)} distinct non-empty hash(es)]"
+    )
     return None, args.max_poll_attempts
 
 
@@ -160,10 +172,6 @@ def compare_binaries(opener, args, paths, scheme):
 
             upstream_hash, attempts = stable_upstream_hash(opener, args, path)
             if upstream_hash is None:
-                print(
-                    f"::error::upstream never stabilized "
-                    f"({args.stable_streak}x identical non-empty) for: {path}"
-                )
                 return False
 
             ours_hash = sha256_of(
@@ -228,13 +236,13 @@ def parse_args(argv):
     parser.add_argument(
         "--max-poll-attempts",
         type=int,
-        default=20,
+        default=30,
         help="Maximum upstream fetches per file while waiting for stability",
     )
     parser.add_argument(
         "--poll-interval-seconds",
         type=float,
-        default=1.0,
+        default=2.0,
         help="Delay between upstream poll attempts",
     )
     parser.add_argument(
