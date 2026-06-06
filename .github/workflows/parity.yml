@@ -21,19 +21,6 @@ env:
   OUR_TLS_PORT: "45001"
   # Upstream rejects requests without this Origin header.
   ORIGIN_HEADER: "Origin: https://www.figma.com"
-  # Shared jq filter for the response-comparison steps. Sorts fontFiles
-  # by path and faces by postscript/style to neutralise enumeration
-  # order, and deletes per-face modified_at (upstream's cache-insertion
-  # timestamp, not the file mtime, so impossible to match).
-  NORM: |
-    {
-      version, package, modified_at, modified_fonts, machine_id, launch_source,
-      fontFiles: (.fontFiles
-        | to_entries
-        | sort_by(.key)
-        | map({key, value: (.value | map(del(.modified_at)) | sort_by(.postscript, .style))})
-        | from_entries)
-    }
 
 jobs:
   parity:
@@ -166,74 +153,20 @@ jobs:
             "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files" > /dev/null
           echo "ours warmed"
 
-      - name: Compare /figma/font-files (HTTP)
+      - name: Compare HTTP responses (font-files + all binaries)
         run: |
-          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files"
-          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files"
-          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-http.json
-          curl -fs -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-http.json
-          diff -u /tmp/orig-http.json /tmp/ours-http.json
+          python3 scripts/parity.py \
+            --upstream-url "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}" \
+            --ours-url "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}" \
+            --origin-header "https://www.figma.com"
 
-      - name: Compare /figma/font-files (HTTPS)
+      - name: Compare HTTPS responses (font-files + all binaries)
         run: |
-          ORIG="https://127.0.0.1:${{ env.ORIG_TLS_PORT }}/figma/font-files"
-          OURS="https://127.0.0.1:${{ env.OUR_TLS_PORT }}/figma/font-files"
-          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$ORIG" | jq "$NORM" > /tmp/orig-https.json
-          curl -fsk -H "${{ env.ORIGIN_HEADER }}" "$OURS" | jq "$NORM" > /tmp/ours-https.json
-          diff -u /tmp/orig-https.json /tmp/ours-https.json
-
-      - name: Compare sampled /figma/font-file binaries
-        run: |
-          ORIG="http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-file"
-          OURS="http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-file"
-          # Sample 8 fonts shared by both responses, under the upstream 32 MB cap.
-          # macOS ships bash 3 (no `mapfile`), so write the list to a file
-          # and iterate.
-          jq -r '.fontFiles | keys[]' /tmp/orig-http.json \
-            | while read -r p; do
-                [ -f "$p" ] && [ "$(stat -f%z "$p")" -le 33554432 ] && echo "$p"
-              done \
-            | head -8 > /tmp/samples.txt
-          if [ ! -s /tmp/samples.txt ]; then
-            echo "::error::no sampleable fonts found"
-            exit 1
-          fi
-          # sha256 of an empty body: upstream returns this for a font it has
-          # not yet warmed into its cache (a cold `curl -f` yields no output).
-          EMPTY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-          fetch_sha() {
-            curl -fs -H "${{ env.ORIGIN_HEADER }}" "$1?file=$2" | shasum -a 256 | awk '{print $1}'
-          }
-          while IFS= read -r p; do
-            ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")
-            # Upstream warms its font cache lazily, so a single fetch is racy.
-            # Poll until upstream is stable (3 consecutive identical, non-empty
-            # hashes) and use that as the comparison oracle.
-            prev=""; streak=0; SHA_ORIG=""
-            for attempt in $(seq 1 20); do
-              cur=$(fetch_sha "$ORIG" "$ENC")
-              if [ -n "$cur" ] && [ "$cur" != "$EMPTY" ] && [ "$cur" = "$prev" ]; then
-                streak=$((streak + 1))
-              else
-                streak=1
-              fi
-              prev="$cur"
-              [ "$streak" -ge 3 ] && { SHA_ORIG="$cur"; break; }
-              sleep 1
-            done
-            if [ -z "$SHA_ORIG" ]; then
-              echo "::error::upstream never stabilized (3x identical non-empty) for: $p (last: ${prev:-<empty>})"
-              exit 1
-            fi
-            SHA_OURS=$(fetch_sha "$OURS" "$ENC")
-            if [ "$SHA_ORIG" != "$SHA_OURS" ]; then
-              echo "::error::binary diff: $p"
-              echo "  upstream: $SHA_ORIG"
-              echo "  ours:     $SHA_OURS"
-              exit 1
-            fi
-            echo "ok $SHA_ORIG  $p"
-          done < /tmp/samples.txt
+          python3 scripts/parity.py \
+            --upstream-url "https://127.0.0.1:${{ env.ORIG_TLS_PORT }}" \
+            --ours-url "https://127.0.0.1:${{ env.OUR_TLS_PORT }}" \
+            --origin-header "https://www.figma.com" \
+            --insecure-tls
 
       - name: Teardown
         if: ${{ !cancelled() }}
