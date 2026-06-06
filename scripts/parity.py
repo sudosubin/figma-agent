@@ -54,15 +54,17 @@ def build_opener(insecure_tls):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
 
 
-def fetch(opener, base_url, path, origin, timeout, query=None):
+def fetch(opener, base_url, path, origin, timeout, file_param=None):
     """GET base_url+path and return the response body as bytes.
 
+    When file_param is given it is appended as ?file=<value>, percent-encoded
+    once with `/` left intact (matching the upstream agent's expectation).
     Returns None on any HTTP/connection error (the caller decides whether that
     is fatal or just "not warm yet").
     """
     url = base_url.rstrip("/") + path
-    if query:
-        url += "?" + urllib.parse.urlencode(query)
+    if file_param is not None:
+        url += "?file=" + urllib.parse.quote(file_param, safe="/")
     request = urllib.request.Request(url, headers={"Origin": origin})
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -115,7 +117,7 @@ def sha256_of(content):
     return hashlib.sha256(content).hexdigest() if content else None
 
 
-def stable_upstream_hash(opener, args, encoded_path):
+def stable_upstream_hash(opener, args, path):
     """Poll upstream until its hash is stable, or give up.
 
     Returns (hash, attempts_used) on success, or (None, attempts_used) if the
@@ -132,7 +134,7 @@ def stable_upstream_hash(opener, args, encoded_path):
                 FONT_FILE_PATH,
                 args.origin_header,
                 args.request_timeout_seconds,
-                query={"file": encoded_path},
+                file_param=path,
             )
         )
         if current is not None and current == previous:
@@ -155,9 +157,8 @@ def compare_binaries(opener, args, paths, scheme):
             if not os.path.isfile(path) or os.path.getsize(path) > args.max_file_bytes:
                 skipped += 1
                 continue
-            encoded_path = urllib.parse.quote(path)
 
-            upstream_hash, attempts = stable_upstream_hash(opener, args, encoded_path)
+            upstream_hash, attempts = stable_upstream_hash(opener, args, path)
             if upstream_hash is None:
                 print(
                     f"::error::upstream never stabilized "
@@ -172,7 +173,7 @@ def compare_binaries(opener, args, paths, scheme):
                     FONT_FILE_PATH,
                     args.origin_header,
                     args.request_timeout_seconds,
-                    query={"file": encoded_path},
+                    file_param=path,
                 )
             )
             if upstream_hash != ours_hash:
