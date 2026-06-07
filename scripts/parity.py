@@ -10,7 +10,7 @@ invocation performs the full parity check for that protocol:
 
 The script exits non-zero on the first mismatch. It depends only on the Python
 standard library (no curl / jq / shasum, no pip installs), so the comparison
-rules live in readable code instead of shell + jq one-liners.
+rules live in readable code instead of shell + jq one-liners. Targets Python 3.9.
 
 Why the binary step polls upstream: the upstream agent warms its font cache
 lazily, so a single cold fetch can return an empty body. We poll until upstream
@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Optional
 
 FONT_FILES_PATH = "/figma/font-files"
 FONT_FILE_PATH = "/figma/font-file"
@@ -46,7 +47,7 @@ TOP_LEVEL_KEYS = (
 )
 
 
-def build_opener(insecure_tls):
+def build_opener(insecure_tls: bool) -> urllib.request.OpenerDirector:
     if insecure_tls:
         context = ssl._create_unverified_context()
     else:
@@ -54,7 +55,14 @@ def build_opener(insecure_tls):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
 
 
-def fetch(opener, base_url, path, origin, timeout, file_param=None):
+def fetch(
+    opener: urllib.request.OpenerDirector,
+    base_url: str,
+    path: str,
+    origin: str,
+    timeout: float,
+    file_param: Optional[str] = None,
+) -> Optional[bytes]:
     """GET base_url+path and return the response body as bytes.
 
     When file_param is given it is appended as ?file=<value>, percent-encoded
@@ -62,7 +70,7 @@ def fetch(opener, base_url, path, origin, timeout, file_param=None):
     Returns None on any HTTP/connection error (the caller decides whether that
     is fatal or just "not warm yet").
     """
-    url = base_url.rstrip("/") + path
+    url = base_url.removesuffix("/") + path
     if file_param is not None:
         url += "?file=" + urllib.parse.quote(file_param, safe="/")
     request = urllib.request.Request(url, headers={"Origin": origin})
@@ -73,7 +81,7 @@ def fetch(opener, base_url, path, origin, timeout, file_param=None):
         return None
 
 
-def normalize(document):
+def normalize(document: dict) -> dict:
     """Normalise a /figma/font-files document for comparison.
 
     Keeps a fixed set of top-level keys, sorts fontFiles by path, and within each
@@ -94,11 +102,11 @@ def normalize(document):
     return result
 
 
-def render(document):
+def render(document: dict) -> list[str]:
     return json.dumps(document, indent=2, ensure_ascii=False).splitlines()
 
 
-def compare_font_files(upstream_doc, ours_doc, scheme):
+def compare_font_files(upstream_doc: dict, ours_doc: dict, scheme: str) -> bool:
     upstream_lines = render(normalize(upstream_doc))
     ours_lines = render(normalize(ours_doc))
     if upstream_lines == ours_lines:
@@ -113,11 +121,15 @@ def compare_font_files(upstream_doc, ours_doc, scheme):
     return False
 
 
-def sha256_of(content):
+def sha256_of(content: Optional[bytes]) -> Optional[str]:
     return hashlib.sha256(content).hexdigest() if content else None
 
 
-def stable_upstream_hash(opener, args, path):
+def stable_upstream_hash(
+    opener: urllib.request.OpenerDirector,
+    args: argparse.Namespace,
+    path: str,
+) -> tuple[Optional[str], int]:
     """Poll upstream until its hash is stable, or give up.
 
     Returns (hash, attempts_used) once `stable_streak` consecutive identical,
@@ -125,10 +137,10 @@ def stable_upstream_hash(opener, args, path):
     upstream actually returned (how many empties, how many distinct hashes) and
     returns (None, attempts_used).
     """
-    previous = None
+    previous: Optional[str] = None
     streak = 0
     empty = 0
-    seen = set()
+    seen: set[str] = set()
     for attempt in range(1, args.max_poll_attempts + 1):
         current = sha256_of(
             fetch(
@@ -160,7 +172,12 @@ def stable_upstream_hash(opener, args, path):
     return None, args.max_poll_attempts
 
 
-def compare_binaries(opener, args, paths, scheme):
+def compare_binaries(
+    opener: urllib.request.OpenerDirector,
+    args: argparse.Namespace,
+    paths: list[str],
+    scheme: str,
+) -> bool:
     compared = 0
     skipped = 0
     print(f"::group::font-file binaries ({scheme})")
@@ -199,7 +216,7 @@ def compare_binaries(opener, args, paths, scheme):
     return True
 
 
-def parse_args(argv):
+def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--upstream-url",
@@ -254,7 +271,7 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def main(argv):
+def main(argv: list[str]) -> int:
     args = parse_args(argv)
     scheme = "HTTPS" if args.upstream_url.lower().startswith("https") else "HTTP"
     opener = build_opener(args.insecure_tls)
