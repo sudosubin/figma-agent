@@ -19,8 +19,6 @@ env:
   ORIG_TLS_PORT: "44960"
   OUR_HTTP_PORT: "45000"
   OUR_TLS_PORT: "45001"
-  # Upstream rejects requests without this Origin header.
-  ORIGIN_HEADER: "Origin: https://www.figma.com"
 
 jobs:
   parity:
@@ -106,60 +104,24 @@ jobs:
         run: echo "127.0.0.1 desktop.figma.com" | sudo tee -a /etc/hosts
 
       - name: Start upstream agent and warm
-        # The first /font-files call drives enumeration of every system
-        # font; on CI this can take well over a minute. Wait for the port
-        # to open quickly, then send one blocking warm-up request so later
-        # comparison steps hit the cache.
+        # curl waits for the port (--retry-connrefused) and for the first
+        # /font-files response, which drives the (slow) font enumeration so
+        # later steps hit the warmed cache. Logs are dumped by Teardown on
+        # failure.
         run: |
           "$ORIG_AGENT" > /tmp/orig.log 2>&1 &
           echo $! > /tmp/orig.pid
-          for i in $(seq 1 60); do
-            if nc -z 127.0.0.1 ${{ env.ORIG_HTTP_PORT }} 2>/dev/null; then
-              echo "upstream port open after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 ${{ env.ORIG_HTTP_PORT }} || {
-            echo "::error::upstream did not bind ${{ env.ORIG_HTTP_PORT }}"
-            cat /tmp/orig.log
-            exit 1
-          }
-          echo "warming upstream..."
-          for i in $(seq 1 30); do
-            CODE=$(curl -s -o /tmp/orig-resp -w '%{http_code}' --max-time 60 \
-              -H "${{ env.ORIGIN_HEADER }}" \
-              "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files" 2>/dev/null || echo 000)
-            echo "  attempt $i: HTTP $CODE"
-            [ "${CODE:0:1}" = "2" ] && break
-            sleep 5
-          done
-          if [ "${CODE:0:1}" != "2" ]; then
-            echo "::error::upstream never returned 2xx"
-            cat /tmp/orig.log
-            exit 1
-          fi
+          curl -fs --retry 60 --retry-connrefused --retry-all-errors --retry-delay 2 \
+            --max-time 300 -H "Origin: https://www.figma.com" \
+            "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files" > /dev/null
 
       - name: Start our agent and warm
         run: |
           ./target/release/figma-agent > /tmp/ours.log 2>&1 &
           echo $! > /tmp/ours.pid
-          for i in $(seq 1 60); do
-            if nc -z 127.0.0.1 ${{ env.OUR_HTTP_PORT }} 2>/dev/null; then
-              echo "ours port open after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          nc -z 127.0.0.1 ${{ env.OUR_HTTP_PORT }} || {
-            echo "::error::ours did not bind ${{ env.OUR_HTTP_PORT }}"
-            cat /tmp/ours.log
-            exit 1
-          }
-          curl -fs --max-time 240 --retry 30 --retry-all-errors --retry-delay 2 \
-            -H "${{ env.ORIGIN_HEADER }}" \
+          curl -fs --retry 60 --retry-connrefused --retry-all-errors --retry-delay 2 \
+            --max-time 300 -H "Origin: https://www.figma.com" \
             "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files" > /dev/null
-          echo "ours warmed"
 
       - name: Compare HTTP responses (font-files + all binaries)
         run: |
