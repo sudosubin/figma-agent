@@ -163,7 +163,12 @@ def stable_upstream_hash(
         previous = current
         if current is not None and streak >= args.stable_streak:
             return current, attempt
-        time.sleep(args.poll_interval_seconds)
+        # Only wait when upstream hasn't served this font yet (an empty body
+        # means its cache is still warming). Once it returns content we re-poll
+        # immediately to confirm the streak, so already-warm fonts cost ~3 quick
+        # requests instead of stable_streak * poll_interval seconds each.
+        if current is None:
+            time.sleep(args.poll_interval_seconds)
     print(
         f"::error::upstream never stabilized ({args.stable_streak}x identical "
         f"non-empty) for: {path} [{args.max_poll_attempts} attempts: "
