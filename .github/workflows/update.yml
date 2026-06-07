@@ -48,18 +48,11 @@ jobs:
 
       - name: Apply version bump
         if: steps.ver.outputs.changed == 'true'
-        env:
-          CURRENT: ${{ steps.ver.outputs.current }}
-          LATEST: ${{ steps.ver.outputs.latest }}
         run: |
-          escaped=$(printf '%s' "$CURRENT" | sed 's/\./\\./g')
-          sed -i "s/${escaped}/${LATEST}/g" src/util.rs .github/workflows/parity.yml
+          CURRENT=$(printf '%s' "${{ steps.ver.outputs.current }}" | sed 's/\./\\./g')
+          LATEST="${{ steps.ver.outputs.latest }}"
+          sed -i "s/${CURRENT}/${LATEST}/g" src/util.rs .github/workflows/parity.yml
 
-      # A GitHub App token is used instead of GITHUB_TOKEN for two reasons:
-      # it carries the `workflows` permission (parity.yml lives under
-      # .github/workflows, which GITHUB_TOKEN may not modify), and PRs it
-      # opens DO trigger downstream workflows like `on: pull_request`
-      # (events from GITHUB_TOKEN are suppressed to prevent recursion).
       - name: Mint app token
         if: steps.ver.outputs.changed == 'true'
         id: app-token
@@ -78,6 +71,8 @@ jobs:
           title: "chore: upstream Figma agent ${{ steps.ver.outputs.latest }} available"
           labels: upstream
           body: |
+            ## Summary
+
             A new upstream Figma desktop agent version is available.
 
             - Current: `${{ steps.ver.outputs.current }}`
