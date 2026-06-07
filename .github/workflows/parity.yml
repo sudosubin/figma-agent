@@ -97,6 +97,14 @@ jobs:
           EOF
           cat "$HOME/.config/figma-agent/config.json"
 
+      - name: Pin upstream agent (block self-update)
+        # The agent has a built-in updater that fetches RELEASE.json and
+        # replaces itself with the latest FigmaAgent-<version>.zip at runtime,
+        # so the pinned DMG only controls the *initial* version. Block
+        # desktop.figma.com (the DMG is already downloaded) so upstream stays
+        # at FIGMA_VERSION and the comparison oracle is deterministic.
+        run: echo "127.0.0.1 desktop.figma.com" | sudo tee -a /etc/hosts
+
       - name: Start upstream agent and warm
         # The first /font-files call drives enumeration of every system
         # font; on CI this can take well over a minute. Wait for the port
