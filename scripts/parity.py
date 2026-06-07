@@ -21,6 +21,7 @@ silently skip.
 
 import argparse
 import difflib
+import functools
 import hashlib
 import json
 import os
@@ -30,7 +31,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
+from typing import Callable, Optional
 
 FONT_FILES_PATH = "/figma/font-files"
 FONT_FILE_PATH = "/figma/font-file"
@@ -46,29 +47,29 @@ TOP_LEVEL_KEYS = (
     "launch_source",
 )
 
+# A fetcher is `fetch` with opener/origin/timeout/base_url already bound, so call
+# sites only pass (path, file_param=...). See main().
+Fetcher = Callable[..., Optional[bytes]]
+
 
 def build_opener(insecure_tls: bool) -> urllib.request.OpenerDirector:
-    if insecure_tls:
-        context = ssl._create_unverified_context()
-    else:
-        context = ssl.create_default_context()
+    context = ssl._create_unverified_context() if insecure_tls else ssl.create_default_context()
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
 
 
 def fetch(
     opener: urllib.request.OpenerDirector,
-    base_url: str,
-    path: str,
     origin: str,
     timeout: float,
+    base_url: str,
+    path: str,
     file_param: Optional[str] = None,
 ) -> Optional[bytes]:
-    """GET base_url+path and return the response body as bytes.
+    """GET base_url+path and return the body, or None on any HTTP/connection error.
 
     When file_param is given it is appended as ?file=<value>, percent-encoded
-    once with `/` left intact (matching the upstream agent's expectation).
-    Returns None on any HTTP/connection error (the caller decides whether that
-    is fatal or just "not warm yet").
+    once with `/` left intact (matching the upstream agent's expectation). The
+    config args come first so callers can bind them with functools.partial.
     """
     url = base_url.removesuffix("/") + path
     if file_param is not None:
@@ -79,6 +80,10 @@ def fetch(
             return response.read()
     except (urllib.error.URLError, TimeoutError):
         return None
+
+
+def sha256_of(content: Optional[bytes]) -> Optional[str]:
+    return hashlib.sha256(content).hexdigest() if content else None
 
 
 def normalize(document: dict) -> dict:
@@ -102,16 +107,13 @@ def normalize(document: dict) -> dict:
     return result
 
 
-def render(document: dict) -> list[str]:
-    return json.dumps(document, indent=2, ensure_ascii=False).splitlines()
-
-
 def compare_font_files(upstream_doc: dict, ours_doc: dict, scheme: str) -> bool:
-    upstream_lines = render(normalize(upstream_doc))
-    ours_lines = render(normalize(ours_doc))
+    def render(document: dict) -> list[str]:
+        return json.dumps(normalize(document), indent=2, ensure_ascii=False).splitlines()
+
+    upstream_lines, ours_lines = render(upstream_doc), render(ours_doc)
     if upstream_lines == ours_lines:
-        count = len(upstream_doc.get("fontFiles", {}))
-        print(f"font-files ({scheme}): OK ({count} font entries match)")
+        print(f"font-files ({scheme}): OK ({len(upstream_doc.get('fontFiles', {}))} entries match)")
         return True
     diff = difflib.unified_diff(
         upstream_lines, ours_lines, fromfile="upstream", tofile="ours", lineterm=""
@@ -121,70 +123,36 @@ def compare_font_files(upstream_doc: dict, ours_doc: dict, scheme: str) -> bool:
     return False
 
 
-def sha256_of(content: Optional[bytes]) -> Optional[str]:
-    return hashlib.sha256(content).hexdigest() if content else None
-
-
-def stable_upstream_hash(
-    opener: urllib.request.OpenerDirector,
-    args: argparse.Namespace,
-    path: str,
-) -> tuple[Optional[str], int]:
+def stable_upstream_hash(upstream: Fetcher, args: argparse.Namespace, path: str) -> tuple[Optional[str], int]:
     """Poll upstream until its hash is stable, or give up.
 
     Returns (hash, attempts_used) once `stable_streak` consecutive identical,
-    non-empty responses are seen. On exhaustion it prints a diagnostic of what
-    upstream actually returned (how many empties, how many distinct hashes) and
-    returns (None, attempts_used).
+    non-empty responses are seen. On exhaustion it reports how many responses
+    were empty (a warming cache) and returns (None, attempts_used).
     """
     previous: Optional[str] = None
-    streak = 0
-    empty = 0
-    seen: set[str] = set()
+    streak = empty = 0
     for attempt in range(1, args.max_poll_attempts + 1):
-        current = sha256_of(
-            fetch(
-                opener,
-                args.upstream_url,
-                FONT_FILE_PATH,
-                args.origin_header,
-                args.request_timeout_seconds,
-                file_param=path,
-            )
-        )
+        current = sha256_of(upstream(FONT_FILE_PATH, file_param=path))
         if current is None:
             empty += 1
+            streak = 0
         else:
-            seen.add(current)
-        if current is not None and current == previous:
-            streak += 1
-        else:
-            streak = 1
+            streak = streak + 1 if current == previous else 1
         previous = current
         if current is not None and streak >= args.stable_streak:
             return current, attempt
-        # Only wait when upstream hasn't served this font yet (an empty body
-        # means its cache is still warming). Once it returns content we re-poll
-        # immediately to confirm the streak, so already-warm fonts cost ~3 quick
-        # requests instead of stable_streak * poll_interval seconds each.
-        if current is None:
+        if current is None:  # only wait while the cache is still warming
             time.sleep(args.poll_interval_seconds)
     print(
-        f"::error::upstream never stabilized ({args.stable_streak}x identical "
-        f"non-empty) for: {path} [{args.max_poll_attempts} attempts: "
-        f"{empty} empty, {len(seen)} distinct non-empty hash(es)]"
+        f"::error::upstream never stabilized ({args.stable_streak}x identical non-empty) "
+        f"for: {path} [{args.max_poll_attempts} attempts, {empty} empty]"
     )
     return None, args.max_poll_attempts
 
 
-def compare_binaries(
-    opener: urllib.request.OpenerDirector,
-    args: argparse.Namespace,
-    paths: list[str],
-    scheme: str,
-) -> bool:
-    compared = 0
-    skipped = 0
+def compare_binaries(upstream: Fetcher, ours: Fetcher, args: argparse.Namespace, paths: list[str], scheme: str) -> bool:
+    compared = skipped = 0
     print(f"::group::font-file binaries ({scheme})")
     try:
         for path in paths:
@@ -192,24 +160,13 @@ def compare_binaries(
                 skipped += 1
                 continue
 
-            upstream_hash, attempts = stable_upstream_hash(opener, args, path)
+            upstream_hash, attempts = stable_upstream_hash(upstream, args, path)
             if upstream_hash is None:
                 return False
 
-            ours_hash = sha256_of(
-                fetch(
-                    opener,
-                    args.ours_url,
-                    FONT_FILE_PATH,
-                    args.origin_header,
-                    args.request_timeout_seconds,
-                    file_param=path,
-                )
-            )
+            ours_hash = sha256_of(ours(FONT_FILE_PATH, file_param=path))
             if upstream_hash != ours_hash:
-                print(f"::error::binary diff: {path}")
-                print(f"  upstream: {upstream_hash}")
-                print(f"  ours:     {ours_hash}")
+                print(f"::error::binary diff: {path}\n  upstream: {upstream_hash}\n  ours:     {ours_hash}")
                 return False
 
             note = f"  (warmed in {attempts} polls)" if attempts > 1 else ""
@@ -223,86 +180,40 @@ def compare_binaries(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--upstream-url",
-        required=True,
-        help="Base URL of the upstream agent, e.g. http://127.0.0.1:44950",
-    )
-    parser.add_argument(
-        "--ours-url",
-        required=True,
-        help="Base URL of our agent, e.g. http://127.0.0.1:45000",
-    )
-    parser.add_argument(
-        "--origin-header",
-        required=True,
-        help="Value of the Origin request header, e.g. https://www.figma.com",
-    )
-    parser.add_argument(
-        "--insecure-tls",
-        action="store_true",
-        help="Skip TLS verification (for the HTTPS step's self-signed cert)",
-    )
-    parser.add_argument(
-        "--max-file-bytes",
-        type=int,
-        default=33554432,
-        help="Skip font files larger than this (upstream's 32 MiB cap)",
-    )
-    parser.add_argument(
-        "--stable-streak",
-        type=int,
-        default=3,
-        help="Consecutive identical, non-empty upstream hashes required",
-    )
-    parser.add_argument(
-        "--max-poll-attempts",
-        type=int,
-        default=30,
-        help="Maximum upstream fetches per file while waiting for stability",
-    )
-    parser.add_argument(
-        "--poll-interval-seconds",
-        type=float,
-        default=2.0,
-        help="Delay between upstream poll attempts",
-    )
-    parser.add_argument(
-        "--request-timeout-seconds",
-        type=float,
-        default=60.0,
-        help="Per-request timeout",
-    )
+    parser.add_argument("--upstream-url", required=True, help="Base URL of the upstream agent")
+    parser.add_argument("--ours-url", required=True, help="Base URL of our agent")
+    parser.add_argument("--origin-header", required=True, help="Origin request header value")
+    parser.add_argument("--insecure-tls", action="store_true", help="Skip TLS verification (self-signed HTTPS cert)")
+    parser.add_argument("--max-file-bytes", type=int, default=33554432, help="Skip files larger than this (32 MiB cap)")
+    parser.add_argument("--stable-streak", type=int, default=3, help="Consecutive identical non-empty hashes required")
+    parser.add_argument("--max-poll-attempts", type=int, default=30, help="Max upstream fetches per file")
+    parser.add_argument("--poll-interval-seconds", type=float, default=2.0, help="Delay between polls while warming")
+    parser.add_argument("--request-timeout-seconds", type=float, default=60.0, help="Per-request timeout")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     scheme = "HTTPS" if args.upstream_url.lower().startswith("https") else "HTTP"
-    opener = build_opener(args.insecure_tls)
 
-    upstream_raw = fetch(
-        opener, args.upstream_url, FONT_FILES_PATH, args.origin_header, args.request_timeout_seconds
+    bound = functools.partial(
+        fetch, build_opener(args.insecure_tls), args.origin_header, args.request_timeout_seconds
     )
-    ours_raw = fetch(
-        opener, args.ours_url, FONT_FILES_PATH, args.origin_header, args.request_timeout_seconds
-    )
+    upstream: Fetcher = functools.partial(bound, args.upstream_url)
+    ours: Fetcher = functools.partial(bound, args.ours_url)
+
+    upstream_raw, ours_raw = upstream(FONT_FILES_PATH), ours(FONT_FILES_PATH)
     if upstream_raw is None or ours_raw is None:
         which = "upstream" if upstream_raw is None else "ours"
         print(f"::error::could not fetch {FONT_FILES_PATH} from {which} over {scheme}")
         return 1
 
-    upstream_doc = json.loads(upstream_raw)
-    ours_doc = json.loads(ours_raw)
-
+    upstream_doc, ours_doc = json.loads(upstream_raw), json.loads(ours_raw)
     if not compare_font_files(upstream_doc, ours_doc, scheme):
         return 1
 
     paths = sorted(upstream_doc.get("fontFiles", {}))
-    if not compare_binaries(opener, args, paths, scheme):
-        return 1
-
-    return 0
+    return 0 if compare_binaries(upstream, ours, args, paths, scheme) else 1
 
 
 if __name__ == "__main__":
