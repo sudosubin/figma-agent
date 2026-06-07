@@ -27,14 +27,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ARM (Apple Silicon).
           - runner: macos-latest
             arch_slug: mac-arm
-          # Intel. `macos-13` was sunset on 2025-12-08; the only currently
-          # supported Intel-capable hosted label is `macos-15-intel`.
           - runner: macos-15-intel
             arch_slug: mac
+
     runs-on: ${{ matrix.runner }}
+
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,15 +69,11 @@ jobs:
         # the bundle at the canonical install path; the binary then skips
         # install and runs as a daemon directly.
         run: |
-          hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
           DEST_DIR="$HOME/Library/Application Support/Figma"
           mkdir -p "$DEST_DIR"
+          hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
           cp -R /Volumes/Figma/Figma.app/Contents/Library/FigmaAgent.app "$DEST_DIR/"
-          hdiutil detach /Volumes/Figma
-          xattr -dr com.apple.quarantine "$DEST_DIR/FigmaAgent.app" || true
-          AGENT="$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent"
-          ls -lh "$AGENT"
-          echo "ORIG_AGENT=$AGENT" >> $GITHUB_ENV
+          echo "ORIG_AGENT=$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent" >> $GITHUB_ENV
 
       - name: Build our agent
         run: cargo build --release
