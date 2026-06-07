@@ -58,7 +58,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.APP_ID }}
+          client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Create pull request
@@ -79,8 +79,4 @@ jobs:
             - Latest: `${{ steps.ver.outputs.latest }}`
             - Source: https://desktop.figma.com/agent/mac/RELEASE.json
 
-            This PR mechanically bumps the version string in `src/util.rs` and
-            `.github/workflows/parity.yml`. **Byte-for-byte parity is not guaranteed**:
-            the new upstream binary (`FigmaAgent-${{ steps.ver.outputs.latest }}.zip`)
-            likely contains real code changes, so the Parity workflow on this PR is
-            expected to fail until the agent is re-aligned by hand.
+            Version string bump only; Parity will fail until the agent is re-aligned.
