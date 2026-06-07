@@ -17,8 +17,8 @@ env:
   # Upstream Figma agent 126.3.12 binds 44950 (HTTP) and 44960 (HTTPS).
   ORIG_HTTP_PORT: "44950"
   ORIG_TLS_PORT: "44960"
-  OUR_HTTP_PORT: "45000"
-  OUR_TLS_PORT: "45001"
+  LOCAL_HTTP_PORT: "45000"
+  LOCAL_TLS_PORT: "45001"
 
 jobs:
   parity:
@@ -63,11 +63,6 @@ jobs:
             "https://desktop.figma.com/${{ matrix.arch_slug }}/Figma-${{ env.FIGMA_VERSION }}.dmg"
 
       - name: Install upstream agent to canonical location
-        # When launched from inside Figma.app the binary self-installs to
-        # ~/Library/Application Support/Figma/FigmaAgent.app and hands off to
-        # launchd. In CI there is no launchd registration, so we pre-place
-        # the bundle at the canonical install path; the binary then skips
-        # install and runs as a daemon directly.
         run: |
           DEST_DIR="$HOME/Library/Application Support/Figma"
           mkdir -p "$DEST_DIR"
@@ -75,34 +70,25 @@ jobs:
           cp -R /Volumes/Figma/Figma.app/Contents/Library/FigmaAgent.app "$DEST_DIR/"
           echo "ORIG_AGENT=$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent" >> $GITHUB_ENV
 
-      - name: Build our agent
+      - name: Build local agent
         run: cargo build --release
 
-      - name: Configure our agent ports
+      - name: Configure local agent ports
         run: |
           mkdir -p "$HOME/.config/figma-agent"
           cat > "$HOME/.config/figma-agent/config.json" <<EOF
           {
             "host": "127.0.0.1",
-            "port": ${{ env.OUR_HTTP_PORT }},
-            "tls_port": ${{ env.OUR_TLS_PORT }}
+            "port": ${{ env.LOCAL_HTTP_PORT }},
+            "tls_port": ${{ env.LOCAL_TLS_PORT }}
           }
           EOF
           cat "$HOME/.config/figma-agent/config.json"
 
       - name: Pin upstream agent (block self-update)
-        # The agent has a built-in updater that fetches RELEASE.json and
-        # replaces itself with the latest FigmaAgent-<version>.zip at runtime,
-        # so the pinned DMG only controls the *initial* version. Block
-        # desktop.figma.com (the DMG is already downloaded) so upstream stays
-        # at FIGMA_VERSION and the comparison oracle is deterministic.
         run: echo "127.0.0.1 desktop.figma.com" | sudo tee -a /etc/hosts
 
       - name: Start upstream agent and warm
-        # curl waits for the port (--retry-connrefused) and for the first
-        # /font-files response, which drives the (slow) font enumeration so
-        # later steps hit the warmed cache. Logs are dumped by Teardown on
-        # failure.
         run: |
           "$ORIG_AGENT" > /tmp/orig.log 2>&1 &
           echo $! > /tmp/orig.pid
@@ -110,26 +96,26 @@ jobs:
             --max-time 300 -H "Origin: https://www.figma.com" \
             "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}/figma/font-files" > /dev/null
 
-      - name: Start our agent and warm
+      - name: Start local agent and warm
         run: |
-          ./target/release/figma-agent > /tmp/ours.log 2>&1 &
-          echo $! > /tmp/ours.pid
+          ./target/release/figma-agent > /tmp/local.log 2>&1 &
+          echo $! > /tmp/local.pid
           curl -fs --retry 60 --retry-connrefused --retry-all-errors --retry-delay 2 \
             --max-time 300 -H "Origin: https://www.figma.com" \
-            "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}/figma/font-files" > /dev/null
+            "http://127.0.0.1:${{ env.LOCAL_HTTP_PORT }}/figma/font-files" > /dev/null
 
       - name: Compare HTTP responses (font-files + all binaries)
         run: |
           python3 scripts/parity.py \
             --upstream-url "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}" \
-            --ours-url "http://127.0.0.1:${{ env.OUR_HTTP_PORT }}" \
+            --local-url "http://127.0.0.1:${{ env.LOCAL_HTTP_PORT }}" \
             --origin-header "https://www.figma.com"
 
       - name: Compare HTTPS responses (font-files + all binaries)
         run: |
           python3 scripts/parity.py \
             --upstream-url "https://127.0.0.1:${{ env.ORIG_TLS_PORT }}" \
-            --ours-url "https://127.0.0.1:${{ env.OUR_TLS_PORT }}" \
+            --local-url "https://127.0.0.1:${{ env.LOCAL_TLS_PORT }}" \
             --origin-header "https://www.figma.com" \
             --insecure-tls
 
@@ -137,8 +123,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           [ -f /tmp/orig.pid ] && kill "$(cat /tmp/orig.pid)" 2>/dev/null || true
-          [ -f /tmp/ours.pid ] && kill "$(cat /tmp/ours.pid)" 2>/dev/null || true
+          [ -f /tmp/local.pid ] && kill "$(cat /tmp/local.pid)" 2>/dev/null || true
           echo "=== upstream log (tail) ==="
           tail -40 /tmp/orig.log 2>/dev/null || true
-          echo "=== ours log (tail) ==="
-          tail -40 /tmp/ours.log 2>/dev/null || true
+          echo "=== local log (tail) ==="
+          tail -40 /tmp/local.log 2>/dev/null || true
