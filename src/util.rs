@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Upstream Figma desktop version we shape our responses after.
-pub const UPSTREAM_PACKAGE: &str = "126.3.12";
+pub const UPSTREAM_PACKAGE: &str = "126.4.11";
 
 /// HTTP response schema version (the integer `version` field on /figma/font-files).
 pub const UPSTREAM_API_VERSION: u32 = 24;

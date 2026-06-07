@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  FIGMA_VERSION: "126.3.12"
-  # Upstream Figma agent 126.3.12 binds 44950 (HTTP) and 44960 (HTTPS).
+  FIGMA_VERSION: "126.4.11"
+  # Upstream Figma agent 126.4.11 binds 44950 (HTTP) and 44960 (HTTPS).
   ORIG_HTTP_PORT: "44950"
   ORIG_TLS_PORT: "44960"
   LOCAL_HTTP_PORT: "45000"
