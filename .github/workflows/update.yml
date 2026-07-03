@@ -70,6 +70,8 @@ jobs:
           commit-message: "chore: bump upstream Figma agent to ${{ steps.ver.outputs.latest }}"
           title: "chore: upstream Figma agent ${{ steps.ver.outputs.latest }} available"
           labels: upstream
+          assignees: sudosubin
+          reviewers: sudosubin
           body: |
             ## Summary
 
