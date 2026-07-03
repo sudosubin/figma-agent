@@ -43,9 +43,10 @@ default = ["tls"]
 tls = ["dep:axum-server", "dep:rustls", "dep:rustls-pemfile", "dep:rcgen"]
 
 [profile.release]
-lto = "thin"
-codegen-units = 1
+opt-level = "z"
 strip = true
+lto = true
+codegen-units = 1
 
 # Profile used by `dist` when building release archives.
 [profile.dist]
