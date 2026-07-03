@@ -49,25 +49,27 @@ jobs:
             font-fira-code \
             font-source-han-sans-vf
 
-      - name: Cache Figma DMG
-        id: dmg-cache
+      # The agent ships separately from the desktop app since 126.6.x
+      # (desktop and agent version numbers diverged), so fetch the agent
+      # zip directly instead of extracting it from the desktop DMG.
+      - name: Cache FigmaAgent zip
+        id: agent-cache
         uses: actions/cache@v5
         with:
-          path: /tmp/Figma.dmg
-          key: figma-${{ matrix.arch_slug }}-${{ env.FIGMA_VERSION }}
+          path: /tmp/FigmaAgent.zip
+          key: figma-agent-${{ matrix.arch_slug }}-${{ env.FIGMA_VERSION }}
 
-      - name: Download Figma DMG
-        if: steps.dmg-cache.outputs.cache-hit != 'true'
+      - name: Download FigmaAgent zip
+        if: steps.agent-cache.outputs.cache-hit != 'true'
         run: |
-          curl -fL -o /tmp/Figma.dmg \
-            "https://desktop.figma.com/${{ matrix.arch_slug }}/Figma-${{ env.FIGMA_VERSION }}.dmg"
+          curl -fL -o /tmp/FigmaAgent.zip \
+            "https://desktop.figma.com/agent/${{ matrix.arch_slug }}/FigmaAgent-${{ env.FIGMA_VERSION }}.zip"
 
       - name: Install upstream agent to canonical location
         run: |
           DEST_DIR="$HOME/Library/Application Support/Figma"
           mkdir -p "$DEST_DIR"
-          hdiutil attach /tmp/Figma.dmg -nobrowse -readonly -mountpoint /Volumes/Figma
-          cp -R /Volumes/Figma/Figma.app/Contents/Library/FigmaAgent.app "$DEST_DIR/"
+          ditto -x -k /tmp/FigmaAgent.zip "$DEST_DIR"
           echo "ORIG_AGENT=$DEST_DIR/FigmaAgent.app/Contents/MacOS/figma_agent" >> $GITHUB_ENV
 
       - name: Build local agent
