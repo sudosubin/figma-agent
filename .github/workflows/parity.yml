@@ -49,9 +49,7 @@ jobs:
             font-fira-code \
             font-source-han-sans-vf
 
-      # The agent ships separately from the desktop app since 126.6.x
-      # (desktop and agent version numbers diverged), so fetch the agent
-      # zip directly instead of extracting it from the desktop DMG.
+      # The agent ships separately from the desktop app since 126.6.x.
       - name: Cache FigmaAgent zip
         id: agent-cache
         uses: actions/cache@v5

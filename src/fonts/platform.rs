@@ -1,11 +1,7 @@
 //! macOS sources its candidate font paths from
-//! `CTFontManagerCopyAvailableFontURLs` and parses each file with
-//! ttf-parser. Linux uses `fc-list` for the same role.
-//!
-//! Whether that API excludes hidden/document-support families (Athelas,
-//! Iowan, STIXGeneral, ...) depends on the LC_BUILD_VERSION sdk stamp of
-//! the calling binary on macOS 26+; build.rs pins it to upstream's SDK so
-//! we get the same filtered list upstream sees.
+//! `CTFontManagerCopyAvailableFontURLs` (whose result set depends on the
+//! sdk stamp build.rs pins) and parses each file with ttf-parser. Linux
+//! uses `fc-list` for the same role.
 
 use super::FontFiles;
 use std::path::PathBuf;
