@@ -2,11 +2,11 @@
 
 # figma-agent
 
-[![license](https://badgen.net/github/license/sudosubin/figma-agent)](LICENSE)
-[![release](https://badgen.net/github/release/sudosubin/figma-agent)](https://github.com/sudosubin/figma-agent/releases)
-[![crates.io](https://badgen.net/crates/v/figma-agent)](https://crates.io/crates/figma-agent)
-[![parity](https://github.com/sudosubin/figma-agent/actions/workflows/parity.yml/badge.svg)](https://github.com/sudosubin/figma-agent/actions/workflows/parity.yml)
-[![built with rust](https://badgen.net/badge/built%20with/Rust/orange)](https://www.rust-lang.org)
+[![version](https://badgen.net/github/release/sudosubin/figma-agent?label=version)](https://github.com/sudosubin/figma-agent/releases)
+[![Figma Agent](https://badgen.net/badge/Figma%20Agent/126.6.10/blue?icon=figma)](https://www.figma.com/downloads/)
+[![parity](https://badgen.net/github/checks/sudosubin/figma-agent/main/parity%20%28macos-latest%29?label=parity&icon=github)](https://github.com/sudosubin/figma-agent/actions/workflows/parity.yml)
+[![license](https://badgen.net/github/license/sudosubin/figma-agent?color=green)](LICENSE)
+[![downloads](https://badgen.net/github/assets-dl/sudosubin/figma-agent?color=green)](https://github.com/sudosubin/figma-agent/releases)
 
 Local font helper for [Figma](https://www.figma.com), Linux and macOS.
 
@@ -14,6 +14,13 @@ Local font helper for [Figma](https://www.figma.com), Linux and macOS.
 
 A small Rust daemon that exposes the two endpoints the Figma web client
 calls to enumerate and load locally-installed fonts.
+
+## Quick Start
+
+```sh
+cargo install figma-agent
+figma-agent
+```
 
 | Endpoint | Purpose |
 |---|---|
@@ -34,7 +41,15 @@ The non-browser endpoints from the official macOS Figma Agent (spell-check,
 intentionally **not** implemented; they exist for the Figma desktop app's
 IPC with macOS system APIs and are not exercised by figma.com itself.
 
-## Build
+## Installation
+
+```sh
+cargo install figma-agent
+```
+
+Or download a binary from [GitHub Releases](https://github.com/sudosubin/figma-agent/releases).
+
+Build from source:
 
 ```bash
 cargo build --release
@@ -42,16 +57,16 @@ cargo build --release
 
 `--release --no-default-features` to drop TLS (smaller binary, HTTP-only).
 
-## Run
+## Usage
 
 ```bash
-./target/release/figma-agent
+figma-agent
 ```
 
 Default ports: HTTP `127.0.0.1:44950`, HTTPS `127.0.0.1:44951` (same as the
 macOS Figma Agent).
 
-## Config
+## Configuration
 
 Optional JSON file at `$XDG_CONFIG_HOME/figma-agent/config.json`,
 falling back to `~/.config/figma-agent/config.json` on both Linux and macOS.
@@ -146,6 +161,15 @@ Validation: non-empty, ≤ 4 KB path, absolute, no `..` segments, regular
 file, ≤ 256 MB, and inside one of `font_dirs`. The 256 MB ceiling is higher
 than orig's 32 MB so large macOS CJK collections (`AppleSDGothicNeo.ttc`,
 `PingFang.ttc`) remain reachable.
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+cargo build --all-features
+```
 
 ## License
 
