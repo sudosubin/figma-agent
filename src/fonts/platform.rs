@@ -143,7 +143,7 @@ mod linux {
     use super::FontFiles;
     use crate::fonts::{dirs, parser};
     use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use walkdir::WalkDir;
 
     pub(super) fn enumerate(dirs_cfg: &[(PathBuf, bool)]) -> FontFiles {

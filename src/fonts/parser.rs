@@ -366,11 +366,7 @@ fn apply_instance(base: &FaceInfo, inst: NamedInstance) -> FaceInfo {
         match axis.tag.as_str() {
             "wght" => info.weight = *coord as u16,
             "wdth" => info.stretch = quantize_width(*coord as f64),
-            "slnt" | "ital" => {
-                if *coord != 0.0 {
-                    info.italic = true;
-                }
-            }
+            "slnt" | "ital" if *coord != 0.0 => info.italic = true,
             _ => {}
         }
     }
