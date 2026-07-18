@@ -156,7 +156,11 @@ mod linux {
             candidates.entry(path).or_insert(user_installed);
         }
         for (dir, user_installed) in dirs_cfg {
-            for entry in WalkDir::new(dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(dir)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 let path = entry.path();
                 if !parser::is_font_file(path) {
                     continue;

@@ -61,10 +61,7 @@ pub struct FileQuery {
     file: String,
 }
 
-pub async fn font_file(
-    State(cfg): State<Arc<Config>>,
-    Query(q): Query<FileQuery>,
-) -> Response {
+pub async fn font_file(State(cfg): State<Arc<Config>>, Query(q): Query<FileQuery>) -> Response {
     match serve_file(cfg.as_ref(), &q).await {
         Ok(resp) => resp,
         Err(status) => status.into_response(),
@@ -86,11 +83,15 @@ async fn serve_file(cfg: &Config, q: &FileQuery) -> Result<Response, StatusCode>
         return Err(StatusCode::NOT_FOUND);
     }
     let path = PathBuf::from(&q.file);
-    let meta = tokio::fs::metadata(&path).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     if !meta.is_file() || meta.len() > MAX_FONT_SIZE {
         return Err(StatusCode::NOT_FOUND);
     }
-    let bytes = tokio::fs::read(&path).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     Ok((
         [(header::CONTENT_TYPE, "application/octet-stream")],
         Body::from(bytes),

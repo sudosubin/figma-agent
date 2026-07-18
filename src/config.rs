@@ -57,7 +57,10 @@ where
         .into_iter()
         .map(|e| match e {
             FontDirEntry::Plain(p) => (p, false),
-            FontDirEntry::Detailed { path, user_installed } => (path, user_installed),
+            FontDirEntry::Detailed {
+                path,
+                user_installed,
+            } => (path, user_installed),
         })
         .collect())
 }
@@ -82,8 +85,8 @@ impl Config {
             .or_else(default_config_path);
         match path {
             Some(p) if p.exists() => {
-                let bytes = std::fs::read(&p)
-                    .with_context(|| format!("reading config {}", p.display()))?;
+                let bytes =
+                    std::fs::read(&p).with_context(|| format!("reading config {}", p.display()))?;
                 let cfg: Self = serde_json::from_slice(&bytes)
                     .with_context(|| format!("parsing config {}", p.display()))?;
                 tracing::info!(path = %p.display(), "loaded config");

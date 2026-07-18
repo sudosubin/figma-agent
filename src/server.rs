@@ -14,8 +14,7 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
-    ServiceExt,
+    Router, ServiceExt,
 };
 use std::sync::Arc;
 use tower::Layer;
@@ -80,13 +79,25 @@ async fn cors_middleware(req: Request, next: Next) -> Response {
     let h = resp.headers_mut();
     // axum's auto-OPTIONS handler can sneak an `allow` in; strip for parity.
     h.remove("allow");
-    h.insert("access-control-allow-origin", HeaderValue::from_static(ALLOWED_ORIGIN));
+    h.insert(
+        "access-control-allow-origin",
+        HeaderValue::from_static(ALLOWED_ORIGIN),
+    );
     h.insert("vary", HeaderValue::from_static("Origin"));
     if is_options {
-        h.insert("access-control-allow-headers", HeaderValue::from_static("Content-Type, Accept"));
+        h.insert(
+            "access-control-allow-headers",
+            HeaderValue::from_static("Content-Type, Accept"),
+        );
         h.insert("access-control-max-age", HeaderValue::from_static("600"));
-        h.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
-        h.insert("access-control-allow-methods", HeaderValue::from_static("POST, GET, OPTIONS"));
+        h.insert(
+            "access-control-allow-private-network",
+            HeaderValue::from_static("true"),
+        );
+        h.insert(
+            "access-control-allow-methods",
+            HeaderValue::from_static("POST, GET, OPTIONS"),
+        );
     }
     resp
 }

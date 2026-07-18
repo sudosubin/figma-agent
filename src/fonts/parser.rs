@@ -10,7 +10,10 @@ use std::path::Path;
 #[cfg(not(target_os = "macos"))]
 pub(super) fn is_font_file(path: &Path) -> bool {
     matches!(
-        path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("ttf") | Some("otf") | Some("ttc") | Some("otc") | Some("dfont")
     )
 }
@@ -21,7 +24,9 @@ pub(super) fn read_font_file(path: &Path, user_installed: bool) -> Result<Vec<Fa
     let face_count = ttf_parser::fonts_in_collection(&bytes).unwrap_or(1);
     let mut out = Vec::new();
     for index in 0..face_count {
-        let Ok(face) = ttf_parser::Face::parse(&bytes, index) else { continue };
+        let Ok(face) = ttf_parser::Face::parse(&bytes, index) else {
+            continue;
+        };
         let base = make_info(&face, modified_at, user_installed);
         if base.family.is_empty() || base.family.starts_with('.') {
             continue;
@@ -174,7 +179,9 @@ fn pick_axis_name(face: &ttf_parser::Face, tag: &str, name_id: u16) -> String {
             .unwrap_or_else(|| tag.to_string());
     }
     if has_mac {
-        mac_utf16.filter(|s| !s.is_empty()).unwrap_or_else(|| tag.to_string())
+        mac_utf16
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| tag.to_string())
     } else {
         win_utf16.unwrap_or_else(|| tag.to_string())
     }
@@ -221,7 +228,11 @@ fn canonicalize_style(face: &ttf_parser::Face, style: &str) -> String {
             && n.language_id & 0xff == 0x09
             && n.to_string().is_some_and(|s| s.eq_ignore_ascii_case("Italic"))
     });
-    if has_italic_sibling { "Italic".to_string() } else { style.to_string() }
+    if has_italic_sibling {
+        "Italic".to_string()
+    } else {
+        style.to_string()
+    }
 }
 
 /// Read `OS/2.usWidthClass` directly: ttf-parser maps the out-of-range
@@ -266,7 +277,9 @@ fn quantize_width(percent: f64) -> u8 {
 
 #[cfg(unix)]
 pub(super) fn file_ctime(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.ctime() as u64).unwrap_or(0)
+    std::fs::metadata(path)
+        .map(|m| m.ctime() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(not(unix))]
@@ -295,9 +308,7 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
         return Vec::new();
     }
     let u16_at = |o: usize| u16::from_be_bytes([data[o], data[o + 1]]);
-    let i32_at = |o: usize| {
-        i32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
-    };
+    let i32_at = |o: usize| i32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
 
     let axes_offset = u16_at(4) as usize;
     let axis_size = u16_at(10) as usize;
@@ -313,7 +324,12 @@ fn parse_fvar_instances(face: &ttf_parser::Face, axis_count: usize) -> Vec<Named
     let mut out = Vec::with_capacity(instance_count);
     for i in 0..instance_count {
         let base = match instances_offset.checked_add(i.saturating_mul(instance_size)) {
-            Some(b) if b.checked_add(instance_size).is_some_and(|e| e <= data.len()) => b,
+            Some(b)
+                if b.checked_add(instance_size)
+                    .is_some_and(|e| e <= data.len()) =>
+            {
+                b
+            }
             _ => break,
         };
 
