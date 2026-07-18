@@ -47,6 +47,12 @@ IPC with macOS system APIs and are not exercised by figma.com itself.
 cargo install figma-agent
 ```
 
+Or install with Homebrew:
+
+```sh
+brew install sudosubin/tap/figma-agent
+```
+
 Or download a binary from [GitHub Releases](https://github.com/sudosubin/figma-agent/releases).
 
 Build from source:

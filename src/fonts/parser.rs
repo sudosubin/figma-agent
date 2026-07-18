@@ -3,6 +3,7 @@
 
 use super::{AxisInfo, FaceInfo};
 use anyhow::Result;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -263,8 +264,19 @@ fn quantize_width(percent: f64) -> u8 {
     best
 }
 
+#[cfg(unix)]
 pub(super) fn file_ctime(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.ctime() as u64).unwrap_or(0)
+}
+
+#[cfg(not(unix))]
+pub(super) fn file_ctime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 struct NamedInstance {
