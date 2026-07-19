@@ -19,10 +19,8 @@ pub async fn build_config(
 }
 
 async fn generate_self_signed() -> Result<RustlsConfig> {
-    let cert = rcgen::generate_simple_self_signed(vec![
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-    ])?;
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])?;
     let pem = cert.cert.pem();
     let key = cert.key_pair.serialize_pem();
     tracing::warn!(

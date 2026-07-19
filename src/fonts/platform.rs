@@ -143,7 +143,7 @@ mod linux {
     use super::FontFiles;
     use crate::fonts::{dirs, parser};
     use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use walkdir::WalkDir;
 
     pub(super) fn enumerate(dirs_cfg: &[(PathBuf, bool)]) -> FontFiles {
@@ -156,7 +156,11 @@ mod linux {
             candidates.entry(path).or_insert(user_installed);
         }
         for (dir, user_installed) in dirs_cfg {
-            for entry in WalkDir::new(dir).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(dir)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 let path = entry.path();
                 if !parser::is_font_file(path) {
                     continue;
