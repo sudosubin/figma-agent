@@ -104,14 +104,14 @@ jobs:
             --max-time 300 -H "Origin: https://www.figma.com" \
             "http://127.0.0.1:${{ env.LOCAL_HTTP_PORT }}/figma/font-files" > /dev/null
 
-      - name: Compare HTTP responses (font-files + all binaries)
+      - name: Compare HTTP responses (version + font-files + all binaries)
         run: |
           python3 scripts/parity.py \
             --upstream-url "http://127.0.0.1:${{ env.ORIG_HTTP_PORT }}" \
             --local-url "http://127.0.0.1:${{ env.LOCAL_HTTP_PORT }}" \
             --origin-header "https://www.figma.com"
 
-      - name: Compare HTTPS responses (font-files + all binaries)
+      - name: Compare HTTPS responses (version + font-files + all binaries)
         run: |
           python3 scripts/parity.py \
             --upstream-url "https://127.0.0.1:${{ env.ORIG_TLS_PORT }}" \

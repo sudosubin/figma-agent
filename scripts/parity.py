@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Compare our local figma-agent against the upstream Figma agent.
 
-Run once per protocol (CI runs it over HTTP and HTTPS). Each run diffs the
-normalised /figma/font-files JSON, then compares the raw bytes of every shared
-font under the size cap (no sampling). Exits non-zero on the first mismatch.
-Stdlib only (no curl/jq/shasum); targets Python 3.9.
+Run once per protocol (CI runs it over HTTP and HTTPS). Each run compares
+/figma/version, diffs the normalised /figma/font-files JSON, then compares the
+raw bytes of every shared font under the size cap (no sampling). Exits non-zero
+on the first mismatch. Stdlib only (no curl/jq/shasum); targets Python 3.9.
 """
 
 import argparse
@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Optional
 
+VERSION_PATH = "/figma/version"
 FONT_FILES_PATH = "/figma/font-files"
 FONT_FILE_PATH = "/figma/font-file"
 
@@ -87,6 +88,16 @@ def normalize(document: dict) -> dict:
         font_files[path] = faces
     result["fontFiles"] = font_files
     return result
+
+
+def compare_version(upstream_doc: dict, local_doc: dict, scheme: str) -> bool:
+    if upstream_doc == local_doc:
+        print(f"version ({scheme}): OK ({upstream_doc})")
+        return True
+    print(f"::error::{VERSION_PATH} mismatch over {scheme}")
+    print(f"  upstream: {upstream_doc}")
+    print(f"  local:    {local_doc}")
+    return False
 
 
 def compare_font_files(upstream_doc: dict, local_doc: dict, scheme: str) -> bool:
@@ -181,6 +192,14 @@ def main(argv: list[str]) -> int:
     )
     upstream: Fetcher = functools.partial(bound, args.upstream_url)
     local: Fetcher = functools.partial(bound, args.local_url)
+
+    upstream_version_raw, local_version_raw = upstream(VERSION_PATH), local(VERSION_PATH)
+    if upstream_version_raw is None or local_version_raw is None:
+        which = "upstream" if upstream_version_raw is None else "local"
+        print(f"::error::could not fetch {VERSION_PATH} from {which} over {scheme}")
+        return 1
+    if not compare_version(json.loads(upstream_version_raw), json.loads(local_version_raw), scheme):
+        return 1
 
     upstream_raw, local_raw = upstream(FONT_FILES_PATH), local(FONT_FILES_PATH)
     if upstream_raw is None or local_raw is None:

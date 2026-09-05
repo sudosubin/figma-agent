@@ -24,8 +24,9 @@ figma-agent
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /font-files` | List installed fonts + metadata (mirrors macOS Figma Agent's schema) |
-| `GET /font-file?file=<path>` | Stream a font file by path |
+| `GET /figma/version` | Let the Figma web client detect the agent |
+| `GET /figma/font-files` | List installed fonts + metadata (mirrors macOS Figma Agent's schema) |
+| `GET /figma/font-file?file=<path>` | Stream a font file by path |
 
 `OPTIONS` preflight is handled for CORS, including
 `Access-Control-Allow-Private-Network: true`, required by Chrome 94+ when
@@ -33,8 +34,9 @@ figma.com (public origin) reaches `127.0.0.1` (private network).
 
 Responses are gzip/deflate/zstd-compressed when the client sends
 `Accept-Encoding`. `Server: FigmaAgent/<version>` is set on every response.
-Trailing slashes are normalised (so `/font-files/` and `/font-files` route
-to the same handler). Matches the orig macOS Figma Agent's middleware stack.
+Trailing slashes are normalised (so `/figma/font-files/` and
+`/figma/font-files` route to the same handler). Matches the orig macOS Figma
+Agent's middleware stack.
 
 The non-browser endpoints from the official macOS Figma Agent (spell-check,
 `desktop/open-url`, `clear-data`, `assets/*`, `font-preview`) are
@@ -162,7 +164,7 @@ on the orig macOS agent. The instance's `weight` / `stretch` reflect the
 runtime `wght` / `wdth` axis coordinates, and each `variationAxes[i].value`
 is the per-instance coordinate rather than the file-level default.
 
-`/font-file` errors return JSON: `{ error, detail, version, request_id }`.
+`/figma/font-file` errors return JSON: `{ error, detail, version, request_id }`.
 Validation: non-empty, ≤ 4 KB path, absolute, no `..` segments, regular
 file, ≤ 256 MB, and inside one of `font_dirs`. The 256 MB ceiling is higher
 than orig's 32 MB so large macOS CJK collections (`AppleSDGothicNeo.ttc`,

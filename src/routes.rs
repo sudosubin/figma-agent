@@ -1,5 +1,6 @@
+//! `/figma/version` lets the web client detect the agent,
 //! `/figma/font-files` returns the enumerated catalogue in upstream Figma
-//! agent's exact shape. `/figma/font-file` streams the bytes of a single
+//! agent's exact shape, and `/figma/font-file` streams the bytes of a single
 //! font path.
 //!
 //! Origin filtering and OPTIONS handling live in `server::cors_middleware`.
@@ -28,6 +29,20 @@ const MAX_FONT_SIZE: u64 = 256 * 1024 * 1024;
 fn cached_machine_id() -> &'static str {
     static MID: OnceLock<String> = OnceLock::new();
     MID.get_or_init(machine_id)
+}
+
+#[derive(Serialize)]
+struct VersionResponse {
+    version: u32,
+    package: &'static str,
+}
+
+pub async fn version() -> Response {
+    Json(VersionResponse {
+        version: UPSTREAM_API_VERSION,
+        package: UPSTREAM_PACKAGE,
+    })
+    .into_response()
 }
 
 #[derive(Serialize)]

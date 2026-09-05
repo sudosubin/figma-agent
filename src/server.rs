@@ -29,6 +29,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let state = Arc::new(config);
 
     let router = Router::new()
+        .route("/figma/version", get(routes::version))
         .route("/figma/font-files", get(routes::font_files))
         .route("/figma/font-file", get(routes::font_file))
         .with_state(state.clone())
